@@ -19,8 +19,8 @@ Applicazione web locale per psicoterapeuti: trascrive le registrazioni delle sed
 - Windows 10/11 (l'app usa alcune funzioni specifiche di Windows)
 - Python da 3.12 a 3.14 (testato con 3.13). Python 3.15 non è ancora supportato: OpenVINO non è ancora disponibile per quella versione
 - Consigliata una scheda grafica Intel integrata recente (Core Ultra / Iris Xe) con driver aggiornati
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) con il comando `llama` (build Vulkan) e un modello Gemma in formato GGUF, ad esempio `google/gemma-4-E4B-it-qat-q4_0-gguf`
 - Circa 8 GB di spazio libero (modelli) e 16 GB di RAM
+- Connessione a internet solo per la prima installazione
 
 ## Installazione
 
@@ -33,7 +33,8 @@ avvia.bat
 Al primo avvio `avvia.bat`:
 1. crea l'ambiente Python (`.venv`) e installa `requirements.txt`;
 2. scarica il modello Whisper per la scheda grafica (`OpenVINO/whisper-large-v3-turbo-int8-ov`, circa 800 MB) in `models/`;
-3. avvia il server e apre il browser su <http://127.0.0.1:8765>.
+3. scarica [llama.cpp](https://github.com/ggml-org/llama.cpp) (build Vulkan, circa 40 MB, in `llama.cpp/`) e il modello Gemma `google/gemma-4-E4B-it-qat-q4_0-gguf` (circa 5 GB, licenza Apache 2.0, nessun account necessario) con `tools/setup_llm.py`, solo se non sono già presenti;
+4. avvia il server e apre il browser su <http://127.0.0.1:8765>.
 
 Al primo avvio viene creato anche `config.json` con le impostazioni predefinite: controlla soprattutto `patients_dir`, `llm_exe` e `llm_model`.
 
@@ -43,9 +44,11 @@ La prima trascrizione dopo ogni avvio richiede circa 30 secondi in più per cari
 
 ### Gemma (sintesi)
 
-L'app avvia da sola `llama serve` quando serve e lo chiude dopo `llm_idle_minutes` minuti di inattività. Scarica il modello GGUF (con `llama` o da Hugging Face) e indica in `config.json`:
-- `llm_exe`: percorso di `llama.exe` (trovato automaticamente se è nel PATH)
-- `llm_model`: percorso del file `.gguf` (trovato automaticamente se è nella cache di Hugging Face)
+L'app avvia da sola `llama serve` quando serve e lo chiude dopo `llm_idle_minutes` minuti di inattività. `avvia.bat` installa llama.cpp e Gemma al primo avvio (`tools/setup_llm.py`) e scrive i percorsi in `config.json`:
+- `llm_exe`: percorso di `llama.exe` (se ne hai già uno installato, viene usato quello)
+- `llm_model`: percorso del file `.gguf` (se è già nella cache di Hugging Face non viene riscaricato)
+
+Per reinstallare da capo: `.venv\Scripts\python.exe tools\setup_llm.py --force`.
 
 Per verificare quale scheda grafica vede llama.cpp: `llama serve --list-devices`.
 

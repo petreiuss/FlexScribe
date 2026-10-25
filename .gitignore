@@ -9,6 +9,7 @@ config.json
 # downloaded or generated at runtime
 models/
 whisper.cpp/
+llama.cpp/
 ffmpeg.exe
 *.log
 test_audio/

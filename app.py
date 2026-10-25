@@ -45,7 +45,9 @@ DEFAULT_CONFIG = {
     "host": "127.0.0.1",
     "port": 8765,
     # local LLM for clinical summaries (llama.cpp "llama serve")
-    "llm_exe": shutil.which("llama") or str(Path.home() / "AppData/Local/Microsoft/WindowsApps/llama.exe"),
+    # llama.cpp: the copy downloaded by tools/setup_llm.py, else one on the PATH
+    "llm_exe": next((str(p) for p in (APP_DIR / "llama.cpp").rglob("llama.exe")), None)
+               or shutil.which("llama") or str(Path.home() / "AppData/Local/Microsoft/WindowsApps/llama.exe"),
     "llm_model": next((p for p in glob.glob(str(Path.home() / ".cache/huggingface/hub/models--google--gemma-4*/snapshots/*/*.gguf"))
                        if "mmproj" not in p), ""),
     "llm_port": 8766,

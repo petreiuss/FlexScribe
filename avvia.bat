@@ -11,6 +11,8 @@ if not exist "models\whisper-large-v3-turbo-int8-ov\openvino_encoder_model.xml" 
   echo Scarico il modello Whisper per la scheda grafica, circa 800 MB...
   ".venv\Scripts\python.exe" -c "from huggingface_hub import snapshot_download; snapshot_download('OpenVINO/whisper-large-v3-turbo-int8-ov', local_dir=r'models\whisper-large-v3-turbo-int8-ov')" || goto :errore
 )
+rem llama.cpp + Gemma for the summaries: downloaded only if missing (about 5 GB the first time)
+".venv\Scripts\python.exe" tools\setup_llm.py || echo Attenzione: Gemma non installato, le sintesi non saranno disponibili. Riprova al prossimo avvio.
 ".venv\Scripts\python.exe" app.py
 pause
 exit /b
