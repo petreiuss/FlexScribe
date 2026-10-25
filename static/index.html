@@ -1040,6 +1040,40 @@ function linesSVG(sessions, procs, shown, scale = "flex") {
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Andamento dei processi">${g}</svg>`;
 }
 
+// Autism model: how the indicators observed across sessions line up with the DSM-5 criteria (not a diagnosis/risk)
+const DSM5 = { A: ["a_reciprocita", "a_nonverbale", "a_relazioni"], B: ["a_ripetitivi", "a_routine", "a_interessi", "a_sensoriale"], D: ["a_impatto"] };
+function dsm5Summary(sessions) {
+  const keys = [...DSM5.A, ...DSM5.B, ...DSM5.D];
+  const best = {}, conf = {};
+  sessions.forEach(s => keys.forEach(k => {
+    const c = s.card?.processi[k], v = disp(c);
+    if (v != null && (best[k] == null || v > best[k])) { best[k] = v; conf[k] = c.confirmed; }
+  }));
+  const met = k => (best[k] ?? 0) >= 2;  // moderate or marked
+  const a = DSM5.A.filter(met).length, b = DSM5.B.filter(met).length, dOk = met("a_impatto");
+  const seen = keys.filter(k => best[k] != null).length, confirmed = keys.filter(k => conf[k]).length;
+  const index = Math.round(100 * keys.reduce((t, k) => t + (best[k] ?? 0), 0) / (keys.length * 3));
+  const pattern = a === 3 && b >= 2 && dOk ? ["compatibile con i criteri A, B e D", "sc-i3"]
+                : a >= 2 || b >= 2 ? ["parziale", "sc-i2"] : ["non compatibile con i criteri", "sc-i0"];
+  const label = k => d => `<span class="tag ${met(k) ? "sc-i" + best[k] : ""}" title="${best[k] == null ? "non emerso" : "intensità massima " + best[k]}${conf[k] ? " (confermato)" : ""}">${esc(d)} ${best[k] ?? "–"}</span>`;
+  const names = { a_reciprocita: "A1 reciprocità", a_nonverbale: "A2 non verbale", a_relazioni: "A3 relazioni", a_ripetitivi: "B1 ripetitivi",
+                  a_routine: "B2 routine", a_interessi: "B3 interessi", a_sensoriale: "B4 sensorialità", a_impatto: "D impatto" };
+  return `<div class="panel" style="margin-bottom:16px">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h3 style="margin:0 0 4px;font-size:15px">Corrispondenza ai criteri DSM-5 (autismo) · indicatori osservati</h3>
+        <div class="muted" style="font-size:13px">Intensità massima di ogni dominio in tutte le sedute analizzate; un criterio conta se moderato o marcato (≥2).</div></div>
+      <div style="text-align:right"><div class="muted" style="font-size:12px">Indice di intensità</div><div class="kv">${index}<span class="muted" style="font-size:14px">/100</span></div></div>
+    </div>
+    <div style="margin-top:10px;display:grid;gap:6px;font-size:14px">
+      <div><b>A · comunicazione e interazione sociale:</b> ${a}/3 <span class="muted">(servono tutti e 3)</span> ${DSM5.A.map(k => label(k)(names[k])).join("")}</div>
+      <div><b>B · comportamenti, interessi, attività:</b> ${b}/4 <span class="muted">(servono almeno 2)</span> ${DSM5.B.map(k => label(k)(names[k])).join("")}</div>
+      <div><b>D · impatto sul funzionamento:</b> ${dOk ? "sì" : "no"} ${label("a_impatto")(names.a_impatto)}</div>
+      <div style="margin-top:4px"><b>Profilo:</b> <span class="tag ${pattern[1]}" style="font-size:13px">${pattern[0]}</span>
+        <span class="muted">· domini emersi ${seen}/8 · punteggi confermati da te ${confirmed}/8</span></div>
+    </div>
+    <p class="ai-warn" style="margin:10px 0 0">Non è una diagnosi né una probabilità: riassume ciò che è emerso in seduta. Restano da valutare l'esordio nel periodo dello sviluppo (criterio C) e che le caratteristiche non siano meglio spiegate da altro (criterio E), con strumenti specifici (es. ADOS-2, ADI-R) e anamnesi.</p>
+  </div>`;
+}
 async function renderTrend(patient, keepState) {
   clearTimeout(trendTimer);
   $("#crumb").textContent = "/ " + patient + " / andamento";
@@ -1071,6 +1105,7 @@ async function renderTrend(patient, keepState) {
       <div class="kpi"><div class="muted">Compiti svolti (anche in parte)</div><div class="kv">${hw.length ? hw.filter(e => e !== "non svolti").length + " / " + hw.length : "–"}</div></div>
     </div>
     ${!withCard.length ? `<div class="panel empty">Nessuna seduta analizzata. Le schede si creano automaticamente dopo ogni nuova sintesi${missing.length ? ", oppure usa “Analizza sedute mancanti”" : ""}.</div>` : `
+    ${d.models.some(m => m.id === "asd") ? dsm5Summary(withCard) : ""}
     <div class="trendgrid">
       <div class="panel">
         <h3 style="margin:0 0 8px;font-size:15px">${d.models.map(m => esc(m.label)).join(" e ")}</h3>
