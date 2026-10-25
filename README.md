@@ -36,6 +36,8 @@ Al primo avvio `avvia.bat`:
 
 Al primo avvio viene creato anche `config.json` con le impostazioni predefinite: controlla soprattutto `patients_dir`, `llm_exe` e `llm_model`.
 
+Per avere l'icona **FlexScribe** sul Desktop, esegui una volta `crea-collegamento.bat`: il collegamento avvia l'app con la finestra del server ridotta a icona (chiuderla spegne l'app).
+
 La prima trascrizione dopo ogni avvio richiede circa 30 secondi in più per caricare il modello sulla scheda grafica.
 
 ### Gemma (sintesi)
