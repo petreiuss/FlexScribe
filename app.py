@@ -225,7 +225,8 @@ DATE_PATTERNS = [  # (regex, order of the groups) - ISO first, then Italian day-
     (re.compile(r"(?<!\d)(\d{1,2})[-_./ ](\d{1,2})[-_./ ](20\d{2})(?!\d)"), "dmy"),   # 12-09-2026, 12/09/2026
     (re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)"), "ymd"),                   # 20260912
     (re.compile(r"(?<!\d)(\d{2})(\d{2})(20\d{2})(?!\d)"), "dmy"),                   # 12092026
-    (re.compile(r"(?<!\d)(\d{1,2})[-_./](\d{1,2})[-_./](\d{2})(?!\d)"), "dmy2"),    # 12-09-26, 12.09.26
+    # 12-09-26, 12.09.26, "10 09 26": lookahead so every position is tried ("seduta 2 10 09 26" -> 10/09/26)
+    (re.compile(r"(?=(?<!\d)(\d{1,2})[-_./ ](\d{1,2})[-_./ ](\d{2})(?!\d))"), "dmy2"),
 ]
 MONTHS = {m: i for i, m in enumerate(["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"], 1)}
 MONTH_NAME_DATE = re.compile(r"(?<!\d)(\d{1,2})[-_. ]*(gen\w*|feb\w*|mar\w*|apr\w*|mag\w*|giu\w*|lug\w*|ago\w*|set\w*|ott\w*|"
@@ -236,6 +237,7 @@ IMPORTED_SKILL = "importata"  # summaries brought in from another app (PDF)
 def date_in_name(stem: str):
     """(ISO date, matched text) from a file name such as 'Rossi 12-09-2026', '2026-09-12_seduta', 'REC_20260912'."""
     for rx, order in DATE_PATTERNS + [(MONTH_NAME_DATE, "dmy")]:
+        candidates = []
         for m in rx.finditer(stem):
             g = m.groups()
             y, mo, d = (g[0], g[1], g[2]) if order == "ymd" else (g[2], g[1], g[0])
@@ -243,9 +245,16 @@ def date_in_name(stem: str):
                 y = "20" + y
             mo = MONTHS.get(mo[:3].lower(), mo)
             try:
-                return date(int(y), int(mo), int(d)).isoformat(), m.group(0)
+                found = date(int(y), int(mo), int(d))
             except ValueError:
                 continue
+            if 2000 <= found.year <= date.today().year + 1:
+                matched = m.group(0) or re.search(rf"{g[0]}[-_./ ]{g[1]}[-_./ ]{g[2]}", stem[m.start():]).group(0)
+                candidates.append((found, matched))
+        if candidates:
+            # several readings of the same name ("seduta 2 10 09 26": 02/10/2009 or 10/09/2026): the most recent wins
+            found, matched = max(candidates)
+            return found.isoformat(), matched
     return None, ""
 
 
