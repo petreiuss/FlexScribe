@@ -17,6 +17,6 @@ exit /b
 
 :errore
 echo.
-echo Installazione non riuscita: controlla la connessione e che Python 3.10+ sia installato.
+echo Installazione non riuscita: controlla la connessione e che sia installato Python 3.12, 3.13 o 3.14.
 pause
 exit /b 1

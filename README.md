@@ -16,7 +16,7 @@ Applicazione web locale per psicoterapeuti: trascrive le registrazioni delle sed
 ## Requisiti
 
 - Windows 10/11 (l'app usa alcune funzioni specifiche di Windows)
-- Python 3.10 o superiore (testato con 3.13)
+- Python da 3.12 a 3.14 (testato con 3.13). Python 3.15 non è ancora supportato: OpenVINO non è ancora disponibile per quella versione
 - Consigliata una scheda grafica Intel integrata recente (Core Ultra / Iris Xe) con driver aggiornati
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) con il comando `llama` (build Vulkan) e un modello Gemma in formato GGUF, ad esempio `google/gemma-4-E4B-it-qat-q4_0-gguf`
 - Circa 8 GB di spazio libero (modelli) e 16 GB di RAM

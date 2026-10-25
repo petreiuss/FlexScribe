@@ -1,4 +1,4 @@
-# Python 3.10+ (tested with 3.13) on Windows
+# Python 3.12-3.14 (tested with 3.13) on Windows
 fastapi==0.144.0
 uvicorn==0.54.0
 python-multipart==0.0.32
