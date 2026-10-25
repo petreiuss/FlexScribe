@@ -81,8 +81,39 @@ def install_gemma():
     return hf_hub_download(GEMMA_REPO, GEMMA_FILE)  # Hugging Face cache, shared with other tools
 
 
+DIAR_DIR = APP_DIR / "models" / "diarization"
+DIAR_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
+DIAR_SEGMENTATION = f"{DIAR_BASE}/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"   # ~7 MB
+DIAR_EMBEDDING = f"{DIAR_BASE}/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"  # ~27 MB
+
+
+def install_diarization():
+    """Models that recognize who is speaking (therapist / patient), used by sherpa-onnx."""
+    import tarfile
+    seg = DIAR_DIR / "segmentation.onnx"
+    emb = DIAR_DIR / "embedding.onnx"
+    if seg.exists() and emb.exists():
+        return
+    print("Scarico i modelli per riconoscere chi parla (circa 35 MB)...")
+    DIAR_DIR.mkdir(parents=True, exist_ok=True)
+    if not seg.exists():
+        tmp = DIAR_DIR / "segmentation.tar.bz2"
+        download(DIAR_SEGMENTATION, tmp)
+        with tarfile.open(tmp) as t:
+            member = next(m for m in t.getmembers() if m.name.endswith("model.onnx"))
+            with t.extractfile(member) as src, open(seg, "wb") as dst:
+                dst.write(src.read())
+        tmp.unlink()
+    if not emb.exists():
+        download(DIAR_EMBEDDING, emb)
+
+
 def main():
     force = "--force" in sys.argv
+    try:
+        install_diarization()
+    except Exception as e:  # noqa: BLE001 - the app works without it (no speaker labels)
+        print(f"Attenzione: modelli per riconoscere chi parla non scaricati ({e})")
     cfg = load_config()
     exe = None if force else find_llama(cfg)
     model = None if force else find_gemma(cfg)

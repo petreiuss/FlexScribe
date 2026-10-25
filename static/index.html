@@ -60,6 +60,8 @@
   .seg { display: flex; gap: 12px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
   .seg:hover { background: var(--bg); }
   .seg.now { background: var(--accent-soft); }
+  .spk { display: inline-block; min-width: 76px; font-size: 12px; font-weight: 600; padding-top: 1px; }
+  .spk-0 { color: var(--accent); } .spk-1 { color: #d97706; } .spk-2 { color: #7c3aed; } .spk-3 { color: #db2777; }
   .seg .ts { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; min-width: 64px; padding-top: 1px; }
   audio { width: 100%; margin-top: 12px; }
   .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 6px; }
@@ -148,6 +150,7 @@
     <label>Data della sessione<input type="date" name="session_date" required></label>
     <label>Titolo (facoltativo)<input name="title" placeholder="es. Prima visita"></label>
     <label>Modello<select name="model" id="modelSelect"></select></label>
+    <label>Persone nella registrazione<select name="persone"><option value="1">1 (solo una voce)</option><option value="2" selected>2 (terapeuta e paziente)</option><option value="3">3 (es. con un genitore)</option><option value="4">4</option></select></label>
     <label>Sintesi automatica dopo la trascrizione<select name="auto_skill" id="autoSkillSelect"></select></label>
     <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Carica e trascrivi</button></div>
   </form>
@@ -215,7 +218,7 @@ const enc = encodeURIComponent;
 const fmtDate = d => d ? new Date(d + "T00:00").toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" }) : "";
 const fmtTs = s => { s = Math.floor(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60; return (h ? h + ":" : "") + String(m).padStart(h?2:1,"0") + ":" + String(x).padStart(2,"0"); };
 const STATUS = {
-  queued: ["In coda", "b-busy"], converting: ["Conversione…", "b-busy"], loading: ["Caricamento modello…", "b-busy"], transcribing: ["Trascrizione…", "b-busy"],
+  queued: ["In coda", "b-busy"], converting: ["Conversione…", "b-busy"], loading: ["Caricamento modello…", "b-busy"], transcribing: ["Trascrizione…", "b-busy"], speakers: ["Riconoscimento voci…", "b-busy"],
   done: ["Trascritta", "b-done"], pending: ["Da trascrivere", "b-pending"], error: ["Errore", "b-error"], empty: ["Senza audio", "b-pending"], imported: ["Sintesi importata", "b-done"],
 };
 const modelLabel = id => (config.models.find(m => m.id === id)?.label || id.replace("ggml-","").replace(".bin","")).replace(/ \(.*\)$/, "");
@@ -687,7 +690,7 @@ async function renderPatient(patient, sessionId) {
         <div class="item ${s.id === sessionId ? "active" : ""}" data-s="${esc(s.id)}">
           <div class="t">${esc(fmtDate(s.date))} ${badge(s.status)}</div>
           <div class="muted">${esc(s.title)}${s.has_summary ? " · sintesi ✓" : ""}</div>
-          ${["queued","converting","loading","transcribing"].includes(s.status) ? `<div class="progress"><div style="width:${s.progress||0}%"></div></div>` : ""}
+          ${["queued","converting","loading","transcribing","speakers"].includes(s.status) ? `<div class="progress"><div style="width:${s.progress||0}%"></div></div>` : ""}
         </div>`).join("") : `<div class="empty">Nessuna sessione</div>`}
       </div>
       <div id="detail"></div>
@@ -721,7 +724,7 @@ async function renderSession(patient, sessionId) {
   clearTimeout(summaryTimer);
   const sumActive = s.summary_job && !["done", "error"].includes(s.summary_job.status);
   const procActive = s.processi_job && !["done", "error"].includes(s.processi_job.status);
-  const busy = ["queued","converting","loading","transcribing"].includes(s.status);
+  const busy = ["queued","converting","loading","transcribing","speakers"].includes(s.status);
   const imported = s.status === "imported", showTabs = s.status === "done" || imported;
   if (imported && ["text", "seg"].includes(current.tab)) current.tab = "sum";
   const base = `/api/patients/${enc(patient)}/sessions/${enc(sessionId)}`;
@@ -1117,7 +1120,14 @@ function drawTab() {
   if (current.tab === "sum") return drawSummary(body);
   if (current.tab === "proc") return drawProcess(body);
   if (current.tab === "text") {
-    body.innerHTML = `<textarea class="transcript" id="txt"></textarea>
+    const spk = s.meta.speakers ? Object.values(s.meta.speakers) : [];
+    body.innerHTML = `<div class="row" style="margin-bottom:8px;font-size:13px">${spk.length
+        ? `<span class="muted">Parlanti riconosciuti dalla voce:</span> ${spk.map((n, i) => `<span class="tag spk-${i}">${esc(n)}</span>`).join("")}
+           ${spk.length === 2 ? `<button id="btnSwapSpk" style="font-size:12px;padding:3px 10px">Inverti</button>` : ""}
+           <button id="btnRenameSpk" style="font-size:12px;padding:3px 10px">Rinomina…</button>`
+        : s.has_audio && s.segments.length ? `<span class="muted">Il testo non indica chi parla.</span> <button id="btnDiarize" style="font-size:12px;padding:3px 10px">Riconosci chi parla</button>` : ""}
+      ${s.meta.speakers_error ? `<span class="hint" style="color:var(--warn)">Riconoscimento voci non riuscito: ${esc(s.meta.speakers_error)}</span>` : ""}</div>
+      <textarea class="transcript" id="txt"></textarea>
       <div class="row" style="margin-top:10px"><button class="primary" id="btnSave" disabled>Salva modifiche</button><button id="btnCopy">Copia</button><span class="muted" id="saveState"></span></div>`;
     $("#txt").value = s.text;
     $("#txt").oninput = () => { current.dirty = true; $("#btnSave").disabled = false; $("#saveState").textContent = "Modifiche non salvate"; };
@@ -1127,8 +1137,36 @@ function drawTab() {
       s.text = $("#txt").value; current.dirty = false; $("#btnSave").disabled = true; $("#saveState").textContent = "Salvato"; toast("Trascrizione salvata");
     };
     $("#btnCopy").onclick = () => { navigator.clipboard.writeText($("#txt").value); toast("Copiato negli appunti"); };
+    const sbase = `/api/patients/${enc(current.patient)}/sessions/${enc(current.session)}`;
+    const saveNames = async names => {
+      try { await api(sbase + "/parlanti/nomi", { method: "PUT", ...jsonBody({ names }) }); toast("Parlanti aggiornati");
+            renderSession(current.patient, current.session); } catch (e) { alert(e.message); }
+    };
+    if ($("#btnSwapSpk")) $("#btnSwapSpk").onclick = () => {
+      if (current.dirty && !confirm("Ci sono modifiche non salvate al testo: verranno perse. Continuare?")) return;
+      const [a, b] = Object.keys(s.meta.speakers);
+      saveNames({ [a]: s.meta.speakers[b], [b]: s.meta.speakers[a] });
+    };
+    if ($("#btnRenameSpk")) $("#btnRenameSpk").onclick = async () => {
+      if (current.dirty && !confirm("Ci sono modifiche non salvate al testo: verranno perse. Continuare?")) return;
+      const names = {};
+      for (const [k, n] of Object.entries(s.meta.speakers)) {
+        const v = await askValue({ title: "Rinomina parlante", label: `Nome per “${n}”`, value: n, hint: "Es. Terapeuta, Paziente, Madre, Padre" });
+        if (v === null) return;
+        names[k] = v;
+      }
+      saveNames(names);
+    };
+    if ($("#btnDiarize")) $("#btnDiarize").onclick = async () => {
+      const n = await askValue({ title: "Riconosci chi parla", label: "Quante persone parlano nella registrazione?", type: "select", value: "2",
+                                 options: [2, 3, 4].map(v => ({ value: String(v), label: v === 2 ? "2 (terapeuta e paziente)" : String(v) })),
+                                 hint: "Il testo attuale viene conservato in transcript.senza_parlanti.txt; le sintesi già fatte non cambiano.", ok: "Avvia" });
+      if (!n) return;
+      try { await api(sbase + "/parlanti", { method: "POST", ...jsonBody({ speakers: +n }) }); toast("Riconoscimento delle voci avviato"); route(); }
+      catch (e) { alert(e.message); }
+    };
   } else {
-    body.innerHTML = s.segments.length ? s.segments.map((g, i) => `<div class="seg" data-i="${i}" data-t="${g.from}"><span class="ts">${fmtTs(g.from)}</span><span>${esc(g.text)}</span></div>`).join("")
+    body.innerHTML = s.segments.length ? s.segments.map((g, i) => `<div class="seg" data-i="${i}" data-t="${g.from}"><span class="ts">${fmtTs(g.from)}</span>${g.speaker ? `<span class="spk spk-${Object.values(s.meta.speakers || {}).indexOf(g.speaker)}">${esc(g.speaker)}</span>` : ""}<span>${esc(g.text)}</span></div>`).join("")
       : `<div class="empty">Nessun segmento disponibile</div>`;
     const player = $("#player");
     body.querySelectorAll(".seg").forEach(el => el.onclick = () => { if (player) { player.currentTime = +el.dataset.t; player.play(); } });

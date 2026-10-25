@@ -2,7 +2,7 @@
 nome: Sintesi seduta (CBT terza generazione)
 descrizione: Temi, processi psicologici, valori, interventi, azioni concordate e rischio, in ottica processuale (ACT, mindfulness, CFT, DBT, MCT)
 ---
-Ricevi la trascrizione automatica di una seduta di psicoterapia cognitivo-comportamentale di terza generazione tra terapeuta e paziente, in italiano. La trascrizione può contenere errori di riconoscimento vocale e non indica chi parla: deducilo dal contesto.
+Ricevi la trascrizione automatica di una seduta di psicoterapia cognitivo-comportamentale di terza generazione tra terapeuta e paziente, in italiano. La trascrizione può contenere errori di riconoscimento vocale; per capire chi parla segui le indicazioni del contesto clinico.
 
 Scrivi una sintesi della seduta in italiano, in Markdown, con queste sezioni:
 

@@ -8,6 +8,7 @@ Applicazione web locale per psicoterapeuti: trascrive le registrazioni delle sed
 
 - **Pazienti e sedute** come normali cartelle su disco (`Pazienti/<Paziente>/<AAAA-MM-GG_titolo>/`). I file audio copiati direttamente nella cartella di un paziente diventano automaticamente una seduta datata.
 - **Importazione di sintesi in PDF** fatte con altre applicazioni (pulsante «Importa sintesi PDF» o copiando i PDF nella cartella del paziente): la data viene letta dal nome del file (`2026-09-12`, `12-09-2026`, `12.09.2026`, `20260912`, `12 settembre 2026`). Queste sedute entrano nell'andamento con una scheda dei processi ricavata dalla sintesi.
+- **Chi parla**: dopo la trascrizione le voci vengono riconosciute (sherpa-onnx, offline) e il testo è diviso in righe "Terapeuta:" / "Paziente:", così Gemma non confonde le frasi; si possono invertire o rinominare i parlanti (es. "Madre").
 - **Trascrizione** con Whisper large-v3-turbo su scheda grafica Intel (OpenVINO), circa 8 minuti per un'ora di audio; fallback su CPU con whisper.cpp.
 - **Sintesi cliniche** con modelli ("skill") personalizzabili in `skills/`: sintesi di seduta (CBT di terza generazione), nota SOAP, lettera al medico curante, punti chiave.
 - **Modifica con Gemma** (riscrive solo le sezioni interessate), **modifica a mano**, **controllo grammaticale** (che non tocca le citazioni del paziente) e **cronologia delle versioni** con annullamento.
@@ -33,7 +34,7 @@ avvia.bat
 Al primo avvio `avvia.bat`:
 1. crea l'ambiente Python (`.venv`) e installa `requirements.txt`;
 2. scarica il modello Whisper per la scheda grafica (`OpenVINO/whisper-large-v3-turbo-int8-ov`, circa 800 MB) in `models/`;
-3. scarica [llama.cpp](https://github.com/ggml-org/llama.cpp) (build Vulkan, circa 40 MB, in `llama.cpp/`) e il modello Gemma `google/gemma-4-E4B-it-qat-q4_0-gguf` (circa 5 GB, licenza Apache 2.0, nessun account necessario) con `tools/setup_llm.py`, solo se non sono già presenti;
+3. scarica [llama.cpp](https://github.com/ggml-org/llama.cpp) (build Vulkan, circa 40 MB, in `llama.cpp/`) e il modello Gemma `google/gemma-4-E4B-it-qat-q4_0-gguf` (circa 5 GB, licenza Apache 2.0, nessun account necessario) e i modelli per riconoscere chi parla (circa 35 MB) con `tools/setup_llm.py`, solo se non sono già presenti;
 4. avvia il server e apre il browser su <http://127.0.0.1:8765>.
 
 Al primo avvio viene creato anche `config.json` con le impostazioni predefinite: controlla soprattutto `patients_dir`, `llm_exe` e `llm_model`.

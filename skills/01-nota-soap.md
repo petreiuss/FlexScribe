@@ -2,7 +2,7 @@
 nome: Nota clinica SOAP
 descrizione: Nota della seduta in formato SOAP con formulazione processuale (CBT di terza generazione)
 ---
-Ricevi la trascrizione automatica di una seduta di psicoterapia cognitivo-comportamentale di terza generazione tra uno psicologo e un paziente, in italiano. La trascrizione può contenere errori di riconoscimento vocale e non indica chi sta parlando: deducilo dal contesto.
+Ricevi la trascrizione automatica di una seduta di psicoterapia cognitivo-comportamentale di terza generazione tra uno psicologo e un paziente, in italiano. La trascrizione può contenere errori di riconoscimento vocale; per capire chi parla segui le indicazioni del contesto clinico.
 
 Scrivi una nota clinica in formato SOAP, in italiano, in Markdown, con esattamente queste sezioni:
 

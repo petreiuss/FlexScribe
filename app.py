@@ -90,7 +90,8 @@ DEFAULT_CONFIG = {
     # speculative decoding that copies text already in the prompt: faster rewrites, identical output ("" = off)
     "llm_spec": "ngram-simple",
     "default_skill": "02-seduta-psicoterapia",
-    "auto_process_card": True,  # fill the hexaflex card right after each new summary (transcript still cached)
+    "auto_process_card": True,
+    "default_speakers": 2,  # voices to recognize in a new recording (therapist + patient); 1 = no speaker labels  # fill the hexaflex card right after each new summary (transcript still cached)
     # vocabulary hint for Whisper: helps it spell ACT terms correctly (and nudges punctuation)
     "whisper_prompt": "Seduta di psicoterapia cognitivo-comportamentale di terza generazione: ACT (Acceptance and Commitment Therapy), mindfulness, CFT, DBT. Accettazione, defusione, valori, azione impegnata, autocompassione, rimuginio, evitamento esperienziale.",
 }
@@ -184,7 +185,7 @@ def session_info(sdir: Path):
     m = re.match(r"(\d{4}-\d{2}-\d{2})_?(.*)", sdir.name)
     has_text = (sdir / "transcript.txt").exists()
     job = JOBS.get(job_key(sdir.parent.name, sdir.name))
-    if job and job["status"] in ("queued", "converting", "loading", "transcribing"):
+    if job and job["status"] in ("queued", "converting", "loading", "transcribing", "speakers"):
         status = job["status"]
     elif has_text:
         status = "done"
@@ -392,7 +393,7 @@ def list_sessions(pdir: Path):
 JOBS: dict = {}
 JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
 PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+)%")
-ACTIVE = ("queued", "converting", "transcribing", "loading", "reading", "writing")
+ACTIVE = ("queued", "converting", "transcribing", "speakers", "loading", "reading", "writing")
 
 
 def job_key(patient, session):
@@ -403,12 +404,12 @@ def summary_key(patient, session):
     return f"{patient}/{session}#sintesi"
 
 
-def enqueue(patient: str, session: str, model: str, auto_skill: str = ""):
+def enqueue(patient: str, session: str, model: str, auto_skill: str = "", speakers: int | None = None, kind="transcribe"):
     key = job_key(patient, session)
     if key in JOBS and JOBS[key]["status"] in ACTIVE:
         return
-    JOBS[key] = {"kind": "transcribe", "patient": patient, "session": session, "status": "queued", "progress": 0,
-                 "model": model, "auto_skill": auto_skill, "started": time.time()}
+    JOBS[key] = {"kind": kind, "patient": patient, "session": session, "status": "queued", "progress": 0,
+                 "model": model, "auto_skill": auto_skill, "speakers": speakers, "started": time.time()}
     JOB_QUEUE.put(key)
 
 
@@ -1112,13 +1113,7 @@ def run_job(job: dict):
         raise RuntimeError("Nessun file audio nella sessione")
 
     job["status"] = "converting"
-    wav = sdir / "audio16k.wav"
-    # run inside the session folder with relative file names to keep paths short
-    r = subprocess.run([FFMPEG, "-y", "-i", src.name, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav.name],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(sdir),
-                       creationflags=subprocess.CREATE_NO_WINDOW)
-    if r.returncode != 0:
-        raise RuntimeError("Conversione audio fallita: " + r.stderr[-400:])
+    wav = convert_audio(sdir, src)
 
     job["status"] = "transcribing"
     if model.startswith("ov:"):
@@ -1130,6 +1125,15 @@ def run_job(job: dict):
     meta.update({"model": model, "transcribed_at": time.strftime("%Y-%m-%d %H:%M"),
                  "duration_s": round(time.time() - job["run_started"])})
     write_json(sdir / "meta.json", meta)
+    speakers = int(job.get("speakers") or CFG["default_speakers"])
+    if speakers >= 2:
+        job["status"] = "speakers"
+        try:
+            diarize_session(sdir, wav, speakers)
+        except Exception as e:  # noqa: BLE001 - keep the plain transcript if speaker recognition fails
+            meta = read_json(sdir / "meta.json", {}) or {}
+            meta["speakers_error"] = str(e)
+            write_json(sdir / "meta.json", meta)
     wav.unlink(missing_ok=True)
     job["status"] = "done"
     job["progress"] = 100
@@ -1138,6 +1142,157 @@ def run_job(job: dict):
             enqueue_summary(patient, session, job["auto_skill"])
         except HTTPException:
             pass  # a summary for this session is already running
+
+
+def convert_audio(sdir: Path, src: Path):
+    """16 kHz mono WAV next to the original, for Whisper and speaker recognition."""
+    wav = sdir / "audio16k.wav"
+    # run inside the session folder with relative file names to keep paths short
+    r = subprocess.run([FFMPEG, "-y", "-i", src.name, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav.name],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(sdir),
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    if r.returncode != 0:
+        raise RuntimeError("Conversione audio fallita: " + r.stderr[-400:])
+    return wav
+
+
+# ---------------------------------------------------------------- who is speaking (speaker recognition)
+# Each Whisper segment gets a voice fingerprint (sherpa-onnx speaker embedding, ERes2Net); the fingerprints are grouped
+# into N speakers. Faster and more reliable here than a full diarization pipeline, which mixes voices in 10 s windows.
+
+DIAR_DIR = MODELS_DIR / "diarization"
+_EMBEDDER = None
+THERAPIST_HINTS = re.compile(r"\?|\b(proviamo|prova a|prossima settimana|per la prossima|esercizio|compito|come ti senti|"
+                             r"cosa hai|com'è andat|ti ricordi|ricordi|notare|ci vediamo)\b", re.IGNORECASE)
+
+
+def speaker_embedder():
+    global _EMBEDDER
+    if _EMBEDDER is None:
+        import sherpa_onnx
+        model = DIAR_DIR / "embedding.onnx"
+        if not model.exists():
+            raise RuntimeError("Modello per riconoscere chi parla mancante: riavvia avvia.bat per scaricarlo")
+        _EMBEDDER = sherpa_onnx.SpeakerEmbeddingExtractor(sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+            model=str(model), num_threads=max(1, min(8, (os.cpu_count() or 4) - 1))))
+    return _EMBEDDER
+
+
+def cluster_voices(X, weights, k):
+    """Spherical k-means on unit vectors, started from the longest segment and the most different ones."""
+    import numpy as np
+    centers = [X[int(np.argmax(weights))]]
+    while len(centers) < k:
+        centers.append(X[int(np.argmin(np.max(X @ np.array(centers).T, axis=1)))])
+    C = np.array(centers)
+    for _ in range(25):
+        labels = np.argmax(X @ C.T, axis=1)
+        C = np.array([(X[labels == j] * weights[labels == j, None]).sum(0) if (labels == j).any() else C[j] for j in range(k)])
+        C /= np.linalg.norm(C, axis=1, keepdims=True)
+    return labels
+
+
+def diarize_session(sdir: Path, wav: Path, k: int):
+    """Label every transcript segment with a speaker; name them (therapist = most questions/prompts); rewrite the text."""
+    import wave
+    import numpy as np
+    data = read_json(sdir / "transcript.json", {}) or {}
+    segs = data.get("transcription", [])
+    if len(segs) < k:
+        return
+    with wave.open(str(wav)) as w:
+        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+    ext = speaker_embedder()
+    vecs, weights, idx = [], [], []
+    for i, s in enumerate(segs):
+        a, b = int(s["offsets"]["from"] * 16), int(s["offsets"]["to"] * 16)  # ms -> samples at 16 kHz
+        if b - a < 16000 * 0.8:  # too short for a reliable voice fingerprint: decided by its neighbours below
+            continue
+        st = ext.create_stream()
+        st.accept_waveform(16000, audio[a:b])
+        st.input_finished()
+        v = np.array(ext.compute(st))
+        vecs.append(v / (np.linalg.norm(v) or 1))
+        weights.append((b - a) / 16000)
+        idx.append(i)
+    if len(vecs) < k:
+        return
+    labels = cluster_voices(np.array(vecs), np.array(weights), k)
+    speaker = {i: int(l) for i, l in zip(idx, labels)}
+    last = int(labels[0])
+    for i in range(len(segs)):  # short segments take the speaker of the previous one
+        last = speaker.get(i, last)
+        segs[i]["speaker"] = last
+    # who is the therapist: the voice with most questions and typical prompts per minute of speech
+    score = {j: 0.0 for j in range(k)}
+    talk = {j: 0.0 for j in range(k)}
+    for s in segs:
+        score[s["speaker"]] += len(THERAPIST_HINTS.findall(s["text"]))
+        talk[s["speaker"]] += max(1, (s["offsets"]["to"] - s["offsets"]["from"]) / 60000)
+    therapist = max(score, key=lambda j: score[j] / talk[j])
+    others = [j for j in range(k) if j != therapist]
+    names = {str(therapist): "Terapeuta"}
+    names.update({str(j): ("Paziente" if k == 2 else f"Persona {n + 2}") for n, j in enumerate(others)})
+    write_json(sdir / "transcript.json", data)
+    txt = sdir / "transcript.txt"
+    if txt.exists() and not (sdir / "transcript.senza_parlanti.txt").exists():
+        shutil.copy2(txt, sdir / "transcript.senza_parlanti.txt")  # the text before speaker labels, kept once
+    txt.write_text(turns_text(segs, names), encoding="utf-8")
+    meta = read_json(sdir / "meta.json", {}) or {}
+    meta.update({"speakers": names, "speakers_at": time.strftime("%Y-%m-%d %H:%M")})
+    meta.pop("speakers_error", None)
+    write_json(sdir / "meta.json", meta)
+
+
+def turns_text(segs, names):
+    """'Terapeuta: …' / 'Paziente: …' paragraphs, joining consecutive segments of the same speaker."""
+    out, cur, buf = [], None, []
+    for s in segs:
+        sp = names.get(str(s.get("speaker")), "")
+        if sp != cur and buf:
+            out.append(f"{cur}: {' '.join(buf)}" if cur else " ".join(buf))
+            buf = []
+        cur = sp
+        buf.append(s["text"].strip())
+    if buf:
+        out.append(f"{cur}: {' '.join(buf)}" if cur else " ".join(buf))
+    return "\n\n".join(out) + "\n"
+
+
+def rename_speakers(sdir: Path, new_names: dict):
+    """Swap or rename speakers: updates meta and the 'Name:' prefixes in transcript.txt (keeps manual edits)."""
+    meta = read_json(sdir / "meta.json", {}) or {}
+    old = meta.get("speakers") or {}
+    mapping = {old[k]: new_names[k].strip() for k in old if k in new_names and new_names[k].strip()}
+    txt = sdir / "transcript.txt"
+    if txt.exists() and mapping:
+        lines = txt.read_text(encoding="utf-8-sig", errors="replace").split("\n")
+        for i, line in enumerate(lines):
+            for o, n in mapping.items():
+                if line.startswith(o + ":"):
+                    lines[i] = n + line[len(o):]
+                    break
+        txt.write_text("\n".join(lines), encoding="utf-8")
+    meta["speakers"] = {k: mapping.get(v, v) for k, v in old.items()}
+    write_json(sdir / "meta.json", meta)
+    return meta["speakers"]
+
+
+def run_diarize_job(job: dict):
+    """Speaker recognition on a session transcribed earlier (re-converts the original audio)."""
+    sdir = ROOT / job["patient"] / job["session"]
+    src = find_audio(sdir)
+    if not src or not (sdir / "transcript.json").exists():
+        raise RuntimeError("Servono l'audio originale e la trascrizione con i tempi")
+    job["status"] = "converting"
+    wav = convert_audio(sdir, src)
+    try:
+        job["status"] = "speakers"
+        diarize_session(sdir, wav, int(job.get("speakers") or 2))
+    finally:
+        wav.unlink(missing_ok=True)
+    job["status"] = "done"
+    job["progress"] = 100
 
 
 def transcribe_whispercpp(job: dict, sdir: Path, wav: Path, model: str):
@@ -1232,6 +1387,8 @@ def worker():
             if job["kind"] in ("summary", "processi"):
                 OV_PIPES.clear()  # free the Whisper model before Gemma loads
                 (run_summary if job["kind"] == "summary" else run_process_card)(job)
+            elif job["kind"] == "diarize":
+                run_diarize_job(job)
             else:
                 LLM_SERVER.stop()  # free Gemma's RAM before whisper starts
                 run_job(job)
@@ -1324,7 +1481,7 @@ def get_patients():
             "name": p.name,
             "sessions": len(sessions),
             "last_date": sessions[0]["date"] if sessions else "",
-            "busy": sum(1 for s in sessions if s["status"] in ("queued", "converting", "loading", "transcribing")),
+            "busy": sum(1 for s in sessions if s["status"] in ("queued", "converting", "loading", "transcribing", "speakers")),
             "pending": sum(1 for s in sessions if s["status"] in ("pending", "error")),
             "labels": patient_labels(p),
             "models": patient_models(p),
@@ -1382,7 +1539,8 @@ def get_patient(patient: str):
 
 @app.post("/api/patients/{patient}/sessions")
 async def create_session(patient: str, audio: UploadFile = File(...), session_date: str = Form(""),
-                         title: str = Form(""), model: str = Form(""), auto_skill: str = Form("")):
+                         title: str = Form(""), model: str = Form(""), auto_skill: str = Form(""),
+                         persone: int = Form(0)):
     pdir = patient_dir(patient)
     d = session_date or date.today().isoformat()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
@@ -1400,8 +1558,38 @@ async def create_session(patient: str, audio: UploadFile = File(...), session_da
     write_json(sdir / "meta.json", {"date": d, "title": title.strip() or "Sessione", "original_filename": audio.filename})
     if auto_skill:
         get_skill(auto_skill)
-    enqueue(pdir.name, name, model or CFG["default_model"], auto_skill)
+    enqueue(pdir.name, name, model or CFG["default_model"], auto_skill, persone or CFG["default_speakers"])
     return session_info(sdir)
+
+
+class SpeakersRequest(BaseModel):
+    speakers: int = 2
+
+
+class SpeakerNames(BaseModel):
+    names: dict[str, str]  # speaker index -> name, e.g. {"0": "Paziente", "1": "Terapeuta"}
+
+
+@app.post("/api/patients/{patient}/sessions/{session}/parlanti")
+def recognize_speakers(patient: str, session: str, body: SpeakersRequest):
+    """Recognize who is speaking in a session transcribed earlier."""
+    sdir = session_dir(patient, session)
+    if not find_audio(sdir) or not (sdir / "transcript.json").exists():
+        raise HTTPException(400, "Servono l'audio originale e la trascrizione")
+    if not 2 <= body.speakers <= 6:
+        raise HTTPException(400, "Da 2 a 6 persone")
+    enqueue(sdir.parent.name, sdir.name, "", speakers=body.speakers, kind="diarize")
+    return session_info(sdir)
+
+
+@app.put("/api/patients/{patient}/sessions/{session}/parlanti/nomi")
+def set_speaker_names(patient: str, session: str, body: SpeakerNames):
+    sdir = session_dir(patient, session)
+    ensure_idle(f"{sdir.parent.name}/{sdir.name}")
+    names = [v.strip() for v in body.names.values()]
+    if any(not n or ":" in n for n in names) or len(set(names)) != len(names):
+        raise HTTPException(400, "Nomi non validi (diversi tra loro, senza i due punti)")
+    return {"speakers": rename_speakers(sdir, body.names)}
 
 
 @app.post("/api/patients/{patient}/sessions/{session}/transcribe")
@@ -1420,11 +1608,13 @@ def get_session(patient: str, session: str):
     txt = sdir / "transcript.txt"
     info["text"] = txt.read_text(encoding="utf-8-sig", errors="replace") if txt.exists() else ""
     data = read_json(sdir / "transcript.json", {}) or {}
+    info["meta"] = read_json(sdir / "meta.json", {}) or {}
+    names = info["meta"].get("speakers") or {}
     info["segments"] = [
-        {"from": s["offsets"]["from"] / 1000, "to": s["offsets"]["to"] / 1000, "text": s["text"].strip()}
+        {"from": s["offsets"]["from"] / 1000, "to": s["offsets"]["to"] / 1000, "text": s["text"].strip(),
+         "speaker": names.get(str(s.get("speaker")), "")}
         for s in data.get("transcription", [])
     ]
-    info["meta"] = read_json(sdir / "meta.json", {}) or {}
     info["summaries"] = list_summaries(sdir)
     info["processi"] = effective_card(sdir)
     info["processi_job"] = process_job_info(sdir.parent.name, sdir.name)

@@ -7,3 +7,4 @@ openvino-genai==2026.4.1.0
 numpy==2.5.4
 huggingface_hub==2.2.0
 pypdf==6.21.2
+sherpa-onnx==2.0.0
