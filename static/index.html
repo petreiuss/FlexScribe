@@ -286,7 +286,7 @@ async function renderSession(patient, sessionId) {
   $("#detail").innerHTML = `
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <div><h2>${esc(s.title)}</h2><div class="muted">${esc(fmtDate(s.date))}${s.meta.model ? " · " + esc(modelLabel(s.meta.model)) : ""}${s.meta.transcribed_at ? " · trascritta il " + esc(s.meta.transcribed_at) : ""}${imported ? " · sintesi importata da " + esc(s.meta.original_filename || "PDF") : ""}</div></div>
+        <div><h2>${esc(s.title)}</h2><div class="muted"><a href="#" id="lnkDate" title="Cambia la data della seduta" style="color:inherit">${esc(fmtDate(s.date) || "senza data")}</a>${s.meta.date_source && s.meta.date_source !== "nome del file" && s.meta.date_source !== "modificata a mano" ? ` <span class="badge ${s.meta.date_source.includes("verificare") ? "b-pending" : "b-busy"}" title="Data presa da: ${esc(s.meta.date_source)}">${s.meta.date_source.includes("verificare") ? "data da verificare" : "data dal testo del PDF"}</span>` : ""}${s.meta.model ? " · " + esc(modelLabel(s.meta.model)) : ""}${s.meta.transcribed_at ? " · trascritta il " + esc(s.meta.transcribed_at) : ""}${imported ? " · sintesi importata da " + esc(s.meta.original_filename || "PDF") : ""}</div></div>
         <div class="row">
           ${s.meta.source === "sintesi importata" ? `<a class="btn" href="${base}/originale" target="_blank" style="text-decoration:none">PDF originale</a>` : ""}
           <button id="btnFolder" title="Apri la cartella in Esplora file">Apri cartella</button>
@@ -301,6 +301,15 @@ async function renderSession(patient, sessionId) {
         <div id="tabBody"></div>` : ""}
     </div>`;
   $("#btnFolder").onclick = () => api(base + "/open", { method: "POST" });
+  $("#lnkDate").onclick = async e => {
+    e.preventDefault();
+    const v = prompt("Data della seduta (AAAA-MM-GG):", s.date || new Date().toISOString().slice(0, 10));
+    if (!v || v === s.date) return;
+    try {
+      const r = await api(base + "/data", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: v.trim() }) });
+      toast("Data aggiornata"); location.hash = `#/p/${enc(patient)}/${enc(r.id)}`;
+    } catch (err) { alert(err.message); }
+  };
   const redo = $("#btnRedo");
   if (redo) redo.onclick = async () => {
     if (s.status === "done" && !confirm("Ritrascrivere? Il testo attuale verrà sostituito.")) return;
@@ -343,7 +352,7 @@ function drawSummary(body) {
   }
   if (!active && sel) {
     html += sel.skill === "importata" && !info?.history?.length
-      ? `<p class="hint" style="margin:0 0 10px">Sintesi importata dal PDF “${esc(s.meta.original_filename || "")}”${s.meta.imported_at ? " il " + esc(s.meta.imported_at) : ""}. Il testo è estratto dal PDF: controlla l'impaginazione.</p>`
+      ? `<p class="hint" style="margin:0 0 10px">Sintesi importata dal PDF “${esc(s.meta.original_filename || "")}”. Data della seduta presa dal ${esc(s.meta.date_source || "nome del file")} (clicca la data in alto per cambiarla). Il testo è estratto dal PDF: controlla l'impaginazione.</p>`
       : `<p class="ai-warn">Bozza generata dall'IA (${esc(info?.llm || "LLM locale")}${info?.generated_at ? ", " + esc(info.generated_at) : ""}): verificala sempre prima di usarla.</p>`;
     html += `
       ${current.editing ? `<textarea class="transcript" id="sumTxt"></textarea>` : `<div class="note" id="sumView">${md(sel.text)}</div>`}

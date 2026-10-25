@@ -191,10 +191,11 @@ def summary_job_info(patient, session):
 
 
 DATE_PATTERNS = [  # (regex, order of the groups) - ISO first, then Italian day-month-year
-    (re.compile(r"(?<!\d)(20\d{2})[-_. ](\d{1,2})[-_. ](\d{1,2})(?!\d)"), "ymd"),   # 2026-09-12
-    (re.compile(r"(?<!\d)(\d{1,2})[-_. ](\d{1,2})[-_. ](20\d{2})(?!\d)"), "dmy"),   # 12-09-2026, 12.09.2026
+    (re.compile(r"(?<!\d)(20\d{2})[-_./ ](\d{1,2})[-_./ ](\d{1,2})(?!\d)"), "ymd"),   # 2026-09-12
+    (re.compile(r"(?<!\d)(\d{1,2})[-_./ ](\d{1,2})[-_./ ](20\d{2})(?!\d)"), "dmy"),   # 12-09-2026, 12/09/2026
     (re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)"), "ymd"),                   # 20260912
     (re.compile(r"(?<!\d)(\d{2})(\d{2})(20\d{2})(?!\d)"), "dmy"),                   # 12092026
+    (re.compile(r"(?<!\d)(\d{1,2})[-_./](\d{1,2})[-_./](\d{2})(?!\d)"), "dmy2"),    # 12-09-26, 12.09.26
 ]
 MONTHS = {m: i for i, m in enumerate(["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"], 1)}
 MONTH_NAME_DATE = re.compile(r"(?<!\d)(\d{1,2})[-_. ]*(gen\w*|feb\w*|mar\w*|apr\w*|mag\w*|giu\w*|lug\w*|ago\w*|set\w*|ott\w*|"
@@ -208,6 +209,8 @@ def date_in_name(stem: str):
         for m in rx.finditer(stem):
             g = m.groups()
             y, mo, d = (g[0], g[1], g[2]) if order == "ymd" else (g[2], g[1], g[0])
+            if order == "dmy2":
+                y = "20" + y
             mo = MONTHS.get(mo[:3].lower(), mo)
             try:
                 return date(int(y), int(mo), int(d)).isoformat(), m.group(0)
@@ -276,12 +279,18 @@ def pdf_text(path: Path):
 def import_summary_pdf(pdir: Path, src: Path, original_name: str, move: bool):
     """Create a session from a summary PDF made with another app. Returns the session folder name."""
     stem = Path(original_name).stem
-    d, matched = date_in_name(stem)
-    if not d:
-        d = time.strftime("%Y-%m-%d", time.localtime(src.stat().st_mtime))
     text = pdf_text(src)
     if len(text) < 20:
         raise ValueError("il PDF non contiene testo (forse è una scansione)")
+    # session date: from the file name; else the first date written at the top of the PDF; else the file's date
+    d, matched = date_in_name(stem)
+    date_source = "nome del file"
+    if not d:
+        d, _ = date_in_name(text[:800])
+        date_source = "testo del PDF"
+    if not d:
+        d = time.strftime("%Y-%m-%d", time.localtime(src.stat().st_mtime))
+        date_source = "data del file (da verificare)"
     title = session_title_from(stem, matched, pdir.name) or "Seduta"
     sdir = new_session_dir(pdir, d, title)
     sdir.mkdir()
@@ -291,8 +300,9 @@ def import_summary_pdf(pdir: Path, src: Path, original_name: str, move: bool):
         shutil.rmtree(sdir, ignore_errors=True)
         raise
     (sdir / f"sintesi_{IMPORTED_SKILL}.md").write_text(text + "\n", encoding="utf-8")
-    write_json(sdir / "meta.json", {"date": d, "title": title, "original_filename": original_name,
-                                    "source": "sintesi importata", "imported_at": time.strftime("%Y-%m-%d %H:%M")})
+    write_json(sdir / "meta.json", {"date": d, "date_source": date_source, "title": title,
+                                    "original_filename": original_name, "source": "sintesi importata",
+                                    "imported_at": time.strftime("%Y-%m-%d %H:%M")})
     if CFG["auto_process_card"]:
         enqueue_process_card(pdir.name, sdir.name)
     return sdir.name
@@ -1306,6 +1316,32 @@ async def import_summaries(patient: str, files: list[UploadFile] = File(...)):
         finally:
             tmp.unlink(missing_ok=True)
     return {"created": created, "errors": errors}
+
+
+class DateUpdate(BaseModel):
+    date: str
+
+
+@app.put("/api/patients/{patient}/sessions/{session}/data")
+def set_session_date(patient: str, session: str, body: DateUpdate):
+    """Change a session's date: updates meta.json and renames the folder so it starts with the new date."""
+    sdir = session_dir(patient, session)
+    try:
+        d = date.fromisoformat(body.date).isoformat()
+    except ValueError:
+        raise HTTPException(400, "Data non valida")
+    p, s = sdir.parent.name, sdir.name
+    if any(j["status"] in ACTIVE for k, j in JOBS.items() if k.startswith(f"{p}/{s}")):
+        raise HTTPException(409, "Attendi la fine dei lavori in corso su questa seduta")
+    meta = read_json(sdir / "meta.json", {}) or {}
+    meta.update({"date": d, "date_source": "modificata a mano"})
+    write_json(sdir / "meta.json", meta)
+    rest = re.sub(r"^\d{4}-\d{2}-\d{2}_?", "", s)
+    target = sdir
+    if not s.startswith(d):
+        target = new_session_dir(sdir.parent, d, rest.replace("_", " ") if rest else "")
+        sdir.rename(target)
+    return {"id": target.name, "date": d}
 
 
 @app.get("/api/patients/{patient}/sessions/{session}/originale")
