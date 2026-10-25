@@ -75,6 +75,11 @@
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   a { color: var(--accent); }
+  .graphwrap { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; } @media (max-width: 900px) { .graphwrap { grid-template-columns: 1fr; } }
+  .seg-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-right: 8px; }
+  .seg-toggle button { border: 0; border-radius: 0; padding: 4px 12px; font-size: 13px; } .seg-toggle button.on { background: var(--accent-soft); color: var(--accent); }
+  .glist { margin: 4px 0; padding-left: 0; list-style: none; } .glist li { padding: 3px 0; font-size: 13px; }
+  .glist i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
   .chip { border-radius: 99px; padding: 4px 12px; font-size: 13px; } .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
   .grouptitle { font-size: 15px; margin: 18px 0 10px; } .grouptitle:first-child { margin-top: 0; }
   .menu { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 220px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
@@ -345,7 +350,220 @@ async function renderTrash() {
   });
 }
 
-// ------------------------------------------------------------ dashboard
+// ------------------------------------------------------------ graph of sessions and concepts (no libraries)
+const GRAPH_TYPES = { seduta: { label: "Sedute", color: "#898781" }, tema: { label: "Temi", color: "#2a78d6" },
+                      valore: { label: "Valori", color: "#1baf7a" }, intervento: { label: "Interventi", color: "#eb6834" } };
+const ESITO_COLOR = { "svolti": "#1baf7a", "parziali": "#eda100", "non svolti": "#e34948" };
+
+async function renderGraph(patient, keep) {
+  $("#crumb").textContent = "/ " + patient + " / grafo";
+  const g = await api(`/api/patients/${enc(patient)}/grafo`);
+  current.patient = patient;
+  const st = (keep && renderGraph.state && renderGraph.state.patient === patient) ? renderGraph.state
+    : { patient, layout: "libero", show: new Set(["tema", "valore", "intervento"]), min: 1, pos: {}, view: { x: 0, y: 0, k: 1 }, selected: null };
+  renderGraph.state = st;
+  const sessions = g.nodes.filter(n => n.type === "seduta");
+  const maxCount = Math.max(1, ...g.nodes.filter(n => n.count).map(n => n.count));
+  const todo = g.outdated + g.missing;
+
+  app.innerHTML = `
+    <div class="toolbar">
+      <button onclick="location.hash='#/p/${enc(patient)}'">← ${esc(patient)}</button>
+      <button onclick="location.hash='#/a/${enc(patient)}'">Andamento</button>
+      <span style="flex:1"></span>
+      ${todo ? `<button class="primary" id="btnGraphRefresh" title="Crea o aggiorna le schede delle sedute (i punteggi confermati restano)">Aggiorna schede (${todo})</button>` : ""}
+    </div>
+    <div class="row" style="font-size:13px;margin-bottom:10px">
+      <span class="seg-toggle"><button data-l="libero" class="${st.layout === "libero" ? "on" : ""}">Libero</button><button data-l="tempo" class="${st.layout === "tempo" ? "on" : ""}">Linea del tempo</button></span>
+      ${["tema", "valore", "intervento"].map(t => `<label class="chk"><input type="checkbox" data-t="${t}" ${st.show.has(t) ? "checked" : ""}><i style="background:${GRAPH_TYPES[t].color}"></i>${GRAPH_TYPES[t].label}</label>`).join("")}
+      <label class="chk">in almeno <input type="number" id="gMin" min="1" max="${maxCount}" value="${st.min}" style="width:56px;padding:2px 6px"> sedute</label>
+    </div>
+    ${!sessions.length ? `<div class="panel empty">Nessuna seduta con scheda dei processi.${todo ? " Usa “Aggiorna schede”." : ""}</div>` : `
+    <div class="graphwrap">
+      <div class="panel" style="padding:0;position:relative;overflow:hidden">
+        <svg id="gsvg" width="100%" height="620" style="display:block;cursor:grab;touch-action:none"></svg>
+        <div class="hint" style="position:absolute;left:10px;bottom:8px">Trascina per spostare · rotella per lo zoom · clic su un nodo per i dettagli</div>
+      </div>
+      <div class="panel" id="gpanel"></div>
+    </div>`}`;
+
+  app.querySelectorAll(".seg-toggle button").forEach(b => b.onclick = () => { st.layout = b.dataset.l; st.pos = {}; st.view = { x: 0, y: 0, k: 1 }; renderGraph(patient, true); });
+  app.querySelectorAll("[data-t]").forEach(c => c.onchange = () => { c.checked ? st.show.add(c.dataset.t) : st.show.delete(c.dataset.t); renderGraph(patient, true); });
+  if ($("#gMin")) $("#gMin").onchange = e => { st.min = Math.max(1, +e.target.value || 1); renderGraph(patient, true); };
+  if ($("#btnGraphRefresh")) $("#btnGraphRefresh").onclick = async () => {
+    if (g.outdated && !confirm(`Rianalizzare ${todo} sedute con Gemma per aggiungere interventi e metafore al grafo?\nCirca 1 minuto per seduta, in background. I punteggi che hai confermato restano.`)) return;
+    const r = await api(`/api/patients/${enc(patient)}/grafo/aggiorna`, { method: "POST" });
+    toast(`${r.queued} sedute in analisi: il grafo si aggiorna man mano`); pollGraph(patient);
+  };
+  if (!sessions.length) return;
+
+  // visible nodes and edges
+  const nodes = g.nodes.filter(n => n.type === "seduta" || (st.show.has(n.type) && n.count >= st.min));
+  const ids = new Set(nodes.map(n => n.id));
+  const edges = g.edges.filter(e => ids.has(e.source) && ids.has(e.target));
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const radius = n => n.type === "seduta" ? 8 : 5 + 9 * Math.sqrt(n.count / maxCount);
+  const svg = $("#gsvg"), W = svg.clientWidth || 800, H = 620;
+  layoutGraph(nodes, edges, st, W, H);
+
+  const draw = () => {
+    const sel = st.selected, near = new Set(sel ? [sel] : []);
+    if (sel) edges.forEach(e => { if (e.source === sel) near.add(e.target); if (e.target === sel) near.add(e.source); });
+    const dim = id => sel && !near.has(id) ? 0.15 : 1;
+    let s = `<g transform="translate(${st.view.x},${st.view.y}) scale(${st.view.k})">`;
+    edges.forEach(e => {
+      const a = st.pos[e.source], b = st.pos[e.target];
+      const on = !sel || e.source === sel || e.target === sel;
+      s += e.type === "next"
+        ? `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${ESITO_COLOR[e.esito] || "#898781"}" stroke-width="3" stroke-dasharray="6 4" opacity="${on ? 0.9 : 0.15}"><title>Compiti: ${esc(e.esito || "non discussi")}</title></line>`
+        : `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${GRAPH_TYPES[e.type].color}" stroke-width="1.2" opacity="${on ? 0.45 : 0.06}"/>`;
+    });
+    nodes.forEach(n => {
+      const p = st.pos[n.id], r = radius(n), c = GRAPH_TYPES[n.type].color;
+      const label = n.type === "seduta" ? fmtShort(n.date) : n.label;
+      s += `<g class="gnode" data-id="${esc(n.id)}" opacity="${dim(n.id)}" style="cursor:pointer">
+        ${n.type === "seduta" ? `<rect x="${p.x - r}" y="${p.y - r}" width="${2 * r}" height="${2 * r}" rx="3" fill="var(--panel)" stroke="${c}" stroke-width="2.5"/>`
+                              : `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${c}" ${n.in_vocab ? "" : `stroke="var(--text)" stroke-dasharray="2 2" stroke-width="1"`}/>`}
+        <text x="${p.x + r + 4}" y="${p.y + 4}" font-size="${n.type === "seduta" ? 11 : 12}" fill="var(--${n.type === "seduta" ? "muted" : "text"})">${esc(label)}</text>
+        <title>${esc(n.type === "seduta" ? fmtDate(n.date) + " · " + n.title : n.label + " · " + n.count + " sedute")}</title></g>`;
+    });
+    svg.innerHTML = s + "</g>";
+  };
+
+  // pan, zoom, drag nodes, select
+  let drag = null;
+  svg.onpointerdown = e => {
+    const gn = e.target.closest(".gnode");
+    drag = gn ? { node: gn.dataset.id, x: e.clientX, y: e.clientY, moved: false } : { pan: true, x: e.clientX, y: e.clientY, vx: st.view.x, vy: st.view.y };
+    svg.setPointerCapture(e.pointerId);
+  };
+  svg.onpointermove = e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    if (drag.pan) { st.view.x = drag.vx + dx; st.view.y = drag.vy + dy; }
+    else if (drag.moved) { const p = st.pos[drag.node]; p.x += dx / st.view.k; p.y += dy / st.view.k; drag.x = e.clientX; drag.y = e.clientY; }
+    draw();
+  };
+  svg.onpointerup = () => {
+    if (drag && !drag.moved) { st.selected = drag.node && st.selected !== drag.node ? drag.node : null; draw(); graphPanel(g, st, patient); }
+    drag = null;
+  };
+  svg.onwheel = e => {
+    e.preventDefault();
+    const r = svg.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const k = Math.min(4, Math.max(0.3, st.view.k * f)), ratio = k / st.view.k;
+    st.view = { x: mx - (mx - st.view.x) * ratio, y: my - (my - st.view.y) * ratio, k };
+    draw();
+  };
+  draw();
+  graphPanel(g, st, patient);
+}
+
+// positions: "tempo" = sessions left to right, concepts in bands by type above/below their sessions;
+// "libero" = small force simulation (repulsion + springs), started from the timeline positions
+function layoutGraph(nodes, edges, st, W, H) {
+  const sess = nodes.filter(n => n.type === "seduta");
+  const sx = i => sess.length === 1 ? W / 2 : 70 + (W - 200) * i / (sess.length - 1);
+  const band = { tema: 0.2, valore: 0.72, intervento: 0.88 };
+  const sessIndex = Object.fromEntries(sess.map((n, i) => [n.id, i]));
+  const conceptSessions = {};
+  edges.forEach(e => { if (e.type !== "next") (conceptSessions[e.target] ||= []).push(sessIndex[e.source]); });
+  const target = {};
+  sess.forEach((n, i) => target[n.id] = { x: sx(i), y: H * 0.5 });
+  const used = {};
+  nodes.filter(n => n.type !== "seduta").forEach(n => {
+    const idx = conceptSessions[n.id] || [0], mx = idx.reduce((a, b) => a + sx(b), 0) / idx.length;
+    const k = n.type + Math.round(mx / 60); used[k] = (used[k] || 0) + 1;
+    const step = (used[k] - 1) * 26 * (n.type === "tema" ? -1 : 1);
+    target[n.id] = { x: mx + ((used[k] % 2) ? 12 : -12), y: H * band[n.type] + step };
+  });
+  if (st.layout === "tempo") {
+    nodes.forEach(n => st.pos[n.id] = st.pos[n.id] && st.pos[n.id].manual ? st.pos[n.id] : { ...target[n.id] });
+    return;
+  }
+  const missing = nodes.filter(n => !st.pos[n.id]);
+  if (!missing.length) return;  // keep the user's arrangement when only filters changed
+  missing.forEach(n => st.pos[n.id] = { x: target[n.id].x + (Math.random() - 0.5) * 30, y: target[n.id].y + (Math.random() - 0.5) * 30 });
+  const P = nodes.map(n => st.pos[n.id]), idx = Object.fromEntries(nodes.map((n, i) => [n.id, i]));
+  for (let it = 0; it < 320; it++) {
+    const t = 1 - it / 320, F = P.map(() => ({ x: 0, y: 0 }));
+    for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) {
+      let dx = P[i].x - P[j].x, dy = P[i].y - P[j].y, d2 = dx * dx + dy * dy + 0.01;
+      if (d2 > 160000) continue;
+      const d = Math.sqrt(d2);
+      let f = 7000 / d2;
+      if (d < 110) f += (110 - d) * 0.9;  // keep room for the labels (they extend to the right of each node)
+      F[i].x += f * dx / d; F[i].y += f * dy / d; F[j].x -= f * dx / d; F[j].y -= f * dy / d;
+    }
+    edges.forEach(e => {
+      const a = idx[e.source], b = idx[e.target], L = e.type === "next" ? 170 : 120;
+      const dx = P[b].x - P[a].x, dy = P[b].y - P[a].y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - L) * 0.04;
+      F[a].x += f * dx / d; F[a].y += f * dy / d; F[b].x -= f * dx / d; F[b].y -= f * dy / d;
+    });
+    P.forEach((p, i) => {
+      F[i].x += (W / 2 - p.x) * 0.002; F[i].y += (H / 2 - p.y) * 0.003;
+      p.x += Math.max(-12, Math.min(12, F[i].x)) * t; p.y += Math.max(-12, Math.min(12, F[i].y)) * t;
+      p.x = Math.max(20, Math.min(W - 120, p.x)); p.y = Math.max(20, Math.min(H - 30, p.y));
+    });
+  }
+}
+
+function graphPanel(g, st, patient) {
+  const box = $("#gpanel"); if (!box) return;
+  const n = g.nodes.find(x => x.id === st.selected);
+  const sess = Object.fromEntries(g.nodes.filter(x => x.type === "seduta").map(x => [x.session, x]));
+  const goSession = id => `<a href="#/p/${enc(patient)}/${enc(id)}">${esc(fmtDate(sess[id]?.date))} · ${esc(sess[id]?.title || "")}</a>`;
+  let h = "";
+  if (!n) {
+    const top = g.nodes.filter(x => x.count).sort((a, b) => b.count - a.count).slice(0, 8);
+    h = `<h3 style="margin:0 0 8px;font-size:15px">Concetti ricorrenti</h3>
+      ${top.length ? `<ul class="glist">${top.map(c => `<li><a href="#" data-sel="${esc(c.id)}"><i style="background:${GRAPH_TYPES[c.type].color}"></i>${esc(c.label)}</a> <span class="muted">${c.count} sedute</span></li>`).join("")}</ul>` : `<p class="muted">Nessun concetto ancora.</p>`}
+      <p class="hint">Quadrati = sedute, collegate in ordine di data: il colore della linea indica i compiti della seduta precedente (verde svolti, giallo parziali, rosso non svolti). Cerchi = concetti, più grandi se ricorrono in più sedute; bordo tratteggiato = termine fuori vocabolario.</p>`;
+  } else if (n.type === "seduta") {
+    const linked = g.edges.filter(e => e.source === n.id && e.type !== "next").map(e => g.nodes.find(x => x.id === e.target));
+    h = `<div class="muted" style="font-size:12px">Seduta</div><h3 style="margin:2px 0 10px;font-size:15px">${esc(fmtDate(n.date))} · ${esc(n.title)}</h3>
+      ${["tema", "valore", "intervento"].map(t => { const l = linked.filter(x => x.type === t); return l.length ? `<div style="margin-bottom:6px"><b>${GRAPH_TYPES[t].label}</b> ${l.map(x => `<span class="tag">${esc(x.label)}</span>`).join("")}</div>` : ""; }).join("")}
+      ${n.compiti ? `<div style="margin-bottom:6px"><b>Compiti precedenti</b> ${esc(n.compiti)}</div>` : ""}
+      ${n.azioni?.length ? `<div><b>Azioni concordate</b><ul style="margin:4px 0;padding-left:18px">${n.azioni.map(a => `<li>${esc(a)}</li>`).join("")}</ul></div>` : ""}
+      <p><a href="#/p/${enc(patient)}/${enc(n.session)}">Apri la seduta →</a></p>`;
+  } else {
+    const others = g.nodes.filter(x => x.type === n.type && x.id !== n.id).sort((a, b) => a.label.localeCompare(b.label, "it"));
+    h = `<div class="muted" style="font-size:12px">${{ tema: "Tema", valore: "Valore", intervento: "Intervento" }[n.type]}</div>
+      <h3 style="margin:2px 0 4px;font-size:15px">${esc(n.label)}</h3>
+      <p class="muted" style="margin:0 0 8px">in ${n.count} sedut${n.count === 1 ? "a" : "e"}${n.in_vocab ? "" : " · non è nel vocabolario"}</p>
+      <ul class="glist">${n.sessions.map(id => `<li>${goSession(id)}</li>`).join("")}</ul>
+      ${others.length ? `<div style="margin-top:12px"><b>Unisci</b> <span class="hint">se indica lo stesso concetto di:</span>
+        <div class="row" style="margin-top:4px"><select id="mergeTo" style="flex:1">${others.map(o => `<option value="${esc(o.id)}">${esc(o.label)} (${o.count})</option>`).join("")}</select><button id="btnMerge">Unisci</button></div></div>` : ""}`;
+  }
+  if (g.aliases.length) h += `<details style="margin-top:14px"><summary class="hint">Unioni fatte (${g.aliases.length})</summary><ul class="glist">${g.aliases.map(a =>
+      `<li>${esc(a.from.split(":")[1])} → ${esc(a.to.split(":")[1])} <a href="#" data-unalias="${esc(a.from)}">annulla</a></li>`).join("")}</ul></details>`;
+  box.innerHTML = h;
+  box.querySelectorAll("[data-sel]").forEach(a => a.onclick = e => { e.preventDefault(); st.selected = a.dataset.sel; renderGraph(patient, true); });
+  if ($("#btnMerge")) $("#btnMerge").onclick = async () => {
+    const to = $("#mergeTo").value, label = $("#mergeTo").selectedOptions[0].text;
+    if (!confirm(`Unire “${n.label}” in “${label}”? Vale per tutti i pazienti; puoi annullare dall'elenco delle unioni.`)) return;
+    await api("/api/alias", { method: "POST", ...jsonBody({ source: n.id, target: to }) });
+    st.selected = to; delete st.pos[n.id]; toast("Concetti uniti"); renderGraph(patient, true);
+  };
+  box.querySelectorAll("[data-unalias]").forEach(a => a.onclick = async e => {
+    e.preventDefault(); await api("/api/alias?source=" + enc(a.dataset.unalias), { method: "DELETE" }); toast("Unione annullata"); renderGraph(patient, true);
+  });
+}
+
+let graphTimer = null;
+function pollGraph(patient) {
+  clearTimeout(graphTimer);
+  graphTimer = setTimeout(async () => {
+    if (!location.hash.startsWith("#/g/")) return;
+    const jobs = await api("/api/jobs");
+    const active = jobs.some(j => j.kind === "processi" && j.patient === patient && !["done", "error"].includes(j.status));
+    renderGraph(patient, true);
+    if (active) pollGraph(patient);
+  }, 5000);
+}
+
+
 const NO_LABEL = "__none__";
 const savedFilter = () => { try { return localStorage.getItem("fs-label") || ""; } catch { return ""; } };
 const saveFilter = v => { try { localStorage.setItem("fs-label", v); } catch {} };
@@ -442,6 +660,7 @@ async function renderPatient(patient, sessionId) {
       <span class="spacer" style="flex:1"></span>
       <button id="btnImport" title="Importa sintesi in PDF fatte con un'altra applicazione (la data viene letta dal nome del file)">Importa sintesi PDF</button>
       <input type="file" id="importFiles" accept=".pdf,application/pdf" multiple hidden>
+      <button id="btnGraph" title="Grafo di sedute, temi, valori e interventi">Grafo</button>
       <button id="btnTrend" title="Andamento dei processi nelle sedute">Andamento</button>
       <button class="primary" id="btnUpload">+ Nuova trascrizione</button>
       <button class="icon-btn" id="btnPatMenu" title="Altre azioni sul paziente" aria-label="Altre azioni sul paziente">⋯</button>
@@ -459,6 +678,7 @@ async function renderPatient(patient, sessionId) {
   document.querySelectorAll("#sessions .item").forEach(i => i.onclick = () => location.hash = `#/p/${enc(patient)}/${enc(i.dataset.s)}`);
   $("#btnUpload").onclick = openUpload;
   $("#btnTrend").onclick = () => location.hash = "#/a/" + enc(patient);
+  $("#btnGraph").onclick = () => location.hash = "#/g/" + enc(patient);
   $("#btnPatMenu").onclick = e => patientMenu(e.currentTarget, patient, data.labels || []);
   $("#crumb").textContent = "/ " + patient + ((data.labels || []).length ? " · " + data.labels.join(", ") : "");
   $("#btnImport").onclick = () => $("#importFiles").click();
@@ -809,6 +1029,7 @@ async function renderTrend(patient, keepState) {
   app.innerHTML = `
     <div class="toolbar">
       <button onclick="location.hash='#/p/${enc(patient)}'">← ${esc(patient)}</button>
+      <button onclick="location.hash='#/g/${enc(patient)}'">Grafo</button>
       <span style="flex:1"></span>
       ${running.length ? `<span class="muted">${running.length} in analisi…</span>` : ""}
       ${missing.length ? `<button class="primary" id="btnBackfill">Analizza ${missing.length} sedut${missing.length === 1 ? "a" : "e"} mancant${missing.length === 1 ? "e" : "i"}</button>` : ""}
@@ -942,7 +1163,9 @@ async function pollJobs() {
 async function route(soft) {
   const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
   try {
-    if (parts[0] === "cestino") {
+    if (parts[0] === "g" && parts[1]) {
+      await renderGraph(parts[1], renderGraph.state?.patient === parts[1]);
+    } else if (parts[0] === "cestino") {
       await renderTrash();
     } else if (parts[0] === "a" && parts[1]) {
       await renderTrend(parts[1]);

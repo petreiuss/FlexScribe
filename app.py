@@ -715,6 +715,29 @@ PROCESSES = [  # key, label; score 1 = rigid pole, 5 = flexible pole, 0 = no evi
 ]
 HEXAFLEX = [k for k, _ in PROCESSES[:6]]
 
+
+def load_vocabulary():
+    """skills/_vocabolario.md -> {'temi': [...], 'valori': [...], 'interventi': [...]} (terms shared by all sessions)."""
+    f, vocab, section = SKILLS_DIR / "_vocabolario.md", {}, None
+    if f.exists():
+        for line in f.read_text(encoding="utf-8-sig").splitlines():
+            if line.startswith("## "):
+                section = line[3:].strip().lower()
+                vocab[section] = []
+            elif section and line.lstrip().startswith("- "):
+                vocab[section].append(line.lstrip()[2:].strip())
+    return vocab
+
+
+def vocabulary_prompt():
+    v = load_vocabulary()
+    if not v:
+        return ""
+    lines = [f"- {k}: {', '.join(terms)}" for k, terms in v.items() if terms]
+    return ("\n\nVOCABOLARIO: per temi, valori_emersi e interventi usa questi termini, copiati esattamente, quando "
+            "corrispondono; solo se nessuno corrisponde scrivi un termine nuovo breve (1-3 parole, minuscolo).\n"
+            + "\n".join(lines))
+
 PROCESS_PROMPT = """COMPITO DIVERSO: invece della sintesi, compila una SCHEDA DEI PROCESSI di questa seduta in JSON.
 
 Per ciascun processo assegna un punteggio sulla base di ciò che il paziente porta IN QUESTA SEDUTA:
@@ -730,7 +753,10 @@ Per ciascun processo assegna un punteggio sulla base di ciò che il paziente por
 Per ogni processo scrivi in "evidenza" un esempio telegrafico dalla trascrizione (massimo 12 parole), o "" se il punteggio è 0.
 Compila anche, in modo telegrafico: temi (max 4, 1-3 parole ciascuno), valori_emersi (1-4 parole ciascuno),
 azioni_concordate per la prossima volta (max 8 parole ciascuna), compiti_precedenti (esito dei compiti della seduta
-prima: svolti, parziali, non svolti, non discussi; nota max 10 parole) e rischio (max 10 parole).
+prima: svolti, parziali, non svolti, non discussi; nota max 10 parole), rischio (max 10 parole) e interventi (max 6:
+tecniche, esercizi e metafore usati dal terapeuta in questa seduta, ognuno col suo nome specifico, per esempio
+"passeggeri sull'autobus" e non "metafora").
+Se in una lista non c'è nulla da mettere lasciala vuota ([]): non scrivere frasi come "non affrontati".
 Rispondi solo con il JSON."""
 
 PROCESS_SCHEMA = {
@@ -748,8 +774,10 @@ PROCESS_SCHEMA = {
             "esito": {"type": "string", "enum": ["svolti", "parziali", "non svolti", "non discussi"]},
             "nota": {"type": "string"}}, "required": ["esito", "nota"]},
         "rischio": {"type": "string"},
+        "interventi": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
     },
-    "required": ["processi", "temi", "valori_emersi", "azioni_concordate", "compiti_precedenti", "rischio"],
+    "required": ["processi", "temi", "valori_emersi", "azioni_concordate", "compiti_precedenti", "rischio",
+                 "interventi"],
 }
 
 
@@ -795,7 +823,7 @@ def run_process_card(job: dict):
         LLM_SERVER.ensure()
         job["status"] = "reading"
         text, timings = LLM_SERVER.stream_chat(
-            [{"role": "system", "content": system}, {"role": "user", "content": head + "\n\n" + PROCESS_PROMPT}],
+            [{"role": "system", "content": system}, {"role": "user", "content": head + "\n\n" + PROCESS_PROMPT + vocabulary_prompt()}],
             lambda p: job.update(progress=p), lambda t: job.update(status="writing", partial=t),
             response_format={"type": "json_schema", "json_schema": {"name": "scheda", "schema": PROCESS_SCHEMA}},
             max_tokens=1200)
@@ -841,6 +869,7 @@ def effective_card(sdir: Path):
                     "confirmed": k in conf, "evidence": p.get("evidenza", "")}
     return {"processi": procs, "temi": prop.get("temi", []), "valori": prop.get("valori_emersi", []),
             "azioni": prop.get("azioni_concordate", []), "compiti": prop.get("compiti_precedenti", {}),
+            "interventi": prop.get("interventi"),  # None on cards made before the graph existed
             "rischio": prop.get("rischio", ""), "generated_at": data.get("generated_at"),
             "all_confirmed": all(k in conf for k, _ in PROCESSES), "source": data.get("source", "trascrizione")}
 
@@ -1366,6 +1395,113 @@ def analyze_missing(patient: str):
             enqueue_process_card(pdir.name, s["id"])
             n += 1
     return {"queued": n}
+
+
+# ---------------------------------------------------------------- graph of sessions and concepts
+
+GRAPH_KINDS = {"tema": ("temi", "temi"), "valore": ("valori", "valori"), "intervento": ("interventi", "interventi")}
+# placeholders the model sometimes writes instead of an empty list, and generic words that are not a concept
+PLACEHOLDER = re.compile(r"^(non |nessun|n/?a$|nulla|niente|-$)|^(metafor[ae]|esercizi[o]?|tecnic[ahe]+|interventi?)$")
+ALIAS_FILE = lambda: ROOT / "_alias.json"  # merges done in the graph ("autocritica severa" -> "autocritica")
+
+
+def load_aliases():
+    return read_json(ALIAS_FILE(), {}) or {}
+
+
+def concept_key(kind: str, label: str, vocab: dict, aliases: dict):
+    """Normalized node key + display label: vocabulary spelling, then the clinician's merges."""
+    s = re.sub(r"\s+", " ", str(label)).strip().strip(".;:,\"'").lower()
+    if not s or PLACEHOLDER.search(s):
+        return None, None
+    display = vocab.get(s, s)
+    key = f"{kind}:{display.lower()}"
+    for _ in range(5):  # follow merge chains a -> b -> c
+        if key not in aliases:
+            break
+        key = aliases[key]
+    return key, vocab.get(key.split(":", 1)[1], key.split(":", 1)[1])
+
+
+@app.get("/api/patients/{patient}/grafo")
+def get_graph(patient: str):
+    """Nodes: sessions + the themes, values and interventions of their process cards. Built from the cards, no AI."""
+    pdir = patient_dir(patient)
+    vocab_all, aliases = load_vocabulary(), load_aliases()
+    sessions = sorted(list_sessions(pdir), key=lambda s: (s["date"] or "9999", s["id"]))
+    nodes, edges, concepts, prev = [], [], {}, None
+    outdated = missing = 0
+    for s in sessions:
+        sdir = pdir / s["id"]
+        card = effective_card(sdir)
+        if not card:
+            missing += analyzable(sdir)
+            continue
+        if card.get("interventi") is None:
+            outdated += 1
+        sid = "s:" + s["id"]
+        nodes.append({"id": sid, "type": "seduta", "session": s["id"], "date": s["date"], "title": s["title"],
+                      "compiti": (card.get("compiti") or {}).get("esito", ""), "azioni": card.get("azioni", []),
+                      "source": card.get("source", "trascrizione")})
+        if prev:
+            edges.append({"source": prev, "target": sid, "type": "next",
+                          "esito": (card.get("compiti") or {}).get("esito", "")})
+        prev = sid
+        for kind, (field, section) in GRAPH_KINDS.items():
+            vocab = {t.lower(): t for t in vocab_all.get(section, [])}
+            for label in card.get(field) or []:
+                key, display = concept_key(kind, label, vocab, aliases)
+                if not key:
+                    continue
+                c = concepts.setdefault(key, {"id": key, "type": kind, "label": display, "sessions": [],
+                                              "in_vocab": display.lower() in vocab})
+                if s["id"] not in c["sessions"]:
+                    c["sessions"].append(s["id"])
+                    edges.append({"source": sid, "target": key, "type": kind})
+    for c in concepts.values():
+        c["count"] = len(c["sessions"])
+    return {"patient": pdir.name, "nodes": nodes + list(concepts.values()), "edges": edges,
+            "outdated": outdated, "missing": missing,
+            "aliases": [{"from": k, "to": v} for k, v in aliases.items()]}
+
+
+@app.post("/api/patients/{patient}/grafo/aggiorna")
+def refresh_graph_cards(patient: str):
+    """Queue cards for sessions without one and re-run cards made before 'interventi' existed (confirmed scores kept)."""
+    pdir = patient_dir(patient)
+    n = 0
+    for s in list_sessions(pdir):
+        sdir = pdir / s["id"]
+        card = effective_card(sdir)
+        if analyzable(sdir) and (card is None or card.get("interventi") is None):
+            enqueue_process_card(pdir.name, s["id"])
+            n += 1
+    return {"queued": n}
+
+
+class AliasRequest(BaseModel):
+    source: str  # node key to merge, e.g. "tema:autocritica severa"
+    target: str  # node key to keep, e.g. "tema:autocritica"
+
+
+@app.post("/api/alias")
+def add_alias(body: AliasRequest):
+    if body.source.split(":")[0] != body.target.split(":")[0] or body.source == body.target:
+        raise HTTPException(400, "Si possono unire solo concetti dello stesso tipo")
+    aliases = load_aliases()
+    aliases = {k: (body.target if v == body.source else v) for k, v in aliases.items()}  # re-point old merges
+    aliases[body.source] = body.target
+    aliases.pop(body.target, None)
+    write_json(ALIAS_FILE(), aliases)
+    return {"aliases": aliases}
+
+
+@app.delete("/api/alias")
+def remove_alias(source: str):
+    aliases = load_aliases()
+    aliases.pop(source, None)
+    write_json(ALIAS_FILE(), aliases)
+    return {"aliases": aliases}
 
 
 @app.post("/api/patients/{patient}/import")
