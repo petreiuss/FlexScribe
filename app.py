@@ -28,6 +28,35 @@ import uuid
 from datetime import date
 from pathlib import Path
 
+# ---------------------------------------------------------------- privacy: nothing leaves this computer
+# Set before the libraries are imported. OpenVINO sends usage statistics to Google Analytics unless opted out
+# (https://docs.openvino.ai/2025/about-openvino/additional-resources/telemetry.html): see ensure_openvino_opt_out().
+os.environ.update({
+    "OTEL_SDK_DISABLED": "true",         # FastAPI / OpenTelemetry: no tracing or exporters
+    "HF_HUB_DISABLE_TELEMETRY": "1",     # Hugging Face: no usage pings
+    "HF_HUB_OFFLINE": "1",               # the app itself never downloads (tools/setup_llm.py does, at install)
+    "DO_NOT_TRACK": "1",                 # generic opt-out honoured by several libraries
+})
+
+
+def ensure_openvino_opt_out():
+    """Make sure OpenVINO's telemetry consent is 'declined' (file %LOCALAPPDATA%\\Intel Corporation\\openvino_telemetry = 0)."""
+    consent = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Intel Corporation" / "openvino_telemetry"
+    try:
+        if consent.read_text().strip() == "0":
+            return
+    except OSError:
+        pass
+    tool = Path(sys.executable).parent / "opt_in_out.exe"  # official command shipped with openvino-telemetry
+    if tool.exists():
+        subprocess.run([str(tool), "--opt_out"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    if not consent.exists() or consent.read_text().strip() != "0":
+        consent.parent.mkdir(parents=True, exist_ok=True)
+        consent.write_text("0")
+
+
+ensure_openvino_opt_out()
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles

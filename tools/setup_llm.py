@@ -5,11 +5,14 @@ Usage: python tools/setup_llm.py [--force]
 """
 import glob
 import json
+import os
 import shutil
 import sys
 import urllib.request
 import zipfile
 from pathlib import Path
+
+os.environ.update({"HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"})  # downloads only, no usage pings
 
 APP_DIR = Path(__file__).resolve().parent.parent
 CONFIG = APP_DIR / "config.json"
