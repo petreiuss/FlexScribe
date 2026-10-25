@@ -1028,7 +1028,7 @@ async function renderTrend(patient, keepState) {
   $("#crumb").textContent = "/ " + patient + " / andamento";
   const d = await api(`/api/patients/${enc(patient)}/andamento`);
   current.patient = patient;
-  const st = keepState && renderTrend.state?.patient === patient ? renderTrend.state : { patient, a: null, b: null, shown: new Set(d.models[0].radar) };
+  const st = keepState && renderTrend.state?.patient === patient ? renderTrend.state : { patient, a: null, b: null, shown: new Set(d.models.flatMap(m => m.radar)) };
   renderTrend.state = st;
   const withCard = d.sessions.filter(s => s.card), missing = d.sessions.filter(s => s.analyzable && !s.card && !s.job);
   const running = d.sessions.filter(s => s.job && !["done", "error"].includes(s.job.status));
@@ -1066,12 +1066,13 @@ async function renderTrend(patient, keepState) {
           { values: m.radar.map(k => withCard.find(s => s.id === st.a)?.card.processi[k]?.score), color: "#898781", dash: true },
           { values: m.radar.map(k => withCard.find(s => s.id === st.b)?.card.processi[k]?.score), color: "#2a78d6" }])}`).join("")}
       </div>
+      <div style="display:grid;gap:16px">${d.models.map(m => { const procs = d.processes.filter(p => p.model === m.id); return `
       <div class="panel">
-        <h3 style="margin:0 0 8px;font-size:15px">Andamento per processo</h3>
-        <div class="row" style="font-size:12px;gap:6px">${d.processes.map((p, i) => `<label class="chk"><input type="checkbox" data-k="${p.key}" ${st.shown.has(p.key) ? "checked" : ""}><i style="background:${PROC_COLORS[i % PROC_COLORS.length]}"></i>${esc(p.label)}</label>`).join("")}</div>
-        ${linesSVG(withCard, d.processes, st.shown)}
+        <h3 style="margin:0 0 8px;font-size:15px">Andamento per processo${d.models.length > 1 ? " · " + esc(m.label) : ""}</h3>
+        <div class="row" style="font-size:12px;gap:6px">${procs.map((p, i) => `<label class="chk"><input type="checkbox" data-k="${p.key}" ${st.shown.has(p.key) ? "checked" : ""}><i style="background:${PROC_COLORS[i % PROC_COLORS.length]}"></i>${esc(p.label)}</label>`).join("")}</div>
+        ${linesSVG(withCard, procs, st.shown)}
         <div class="hint">Punto pieno = confermato dal terapeuta · punto vuoto = proposto da Gemma · sedute senza evidenza saltate</div>
-      </div>
+      </div>`; }).join("")}</div>
     </div>
     <div class="panel" style="margin-top:16px;overflow-x:auto">
       <table class="matrix"><thead><tr><th>Seduta</th>${d.processes.map(p => `<th>${esc(p.label)}</th>`).join("")}<th>Temi</th><th>Compiti prec.</th></tr></thead>

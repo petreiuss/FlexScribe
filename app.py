@@ -1463,7 +1463,8 @@ def get_trend(patient: str):
                     "analyzable": analyzable(sdir), "card": effective_card(sdir),
                     "job": process_job_info(pdir.name, s["id"])})
     models = patient_models(pdir)
-    return {"patient": pdir.name, "processes": [{"key": k, "label": l} for k, l, _ in model_processes(models)],
+    return {"patient": pdir.name,
+            "processes": [{"key": k, "label": l, "model": m} for m in models for k, l, _ in MODELS[m]["processes"]],
             "models": [{"id": m, "label": MODELS[m]["label"], "radar": MODELS[m]["radar"]} for m in models],
             "hexaflex": HEXAFLEX, "sessions": out}
 
