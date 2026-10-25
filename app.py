@@ -722,15 +722,15 @@ MODELS = {
     # DNA-v (Hayes & Ciarrochi): ACT for young people
     "dnav": {"label": "DNA-v", "radar": ["d_discoverer", "d_noticer", "d_advisor", "d_valori", "d_self", "d_social"],
              "processes": [
-        ("d_discoverer", "Discoverer", "esplorare, provare comportamenti nuovi e imparare da come vanno "
+        ("d_discoverer", "Esploratore", "(Discoverer) esplorare, provare comportamenti nuovi e imparare da come vanno "
                                        "(1 = evita il nuovo o ripete strategie che non funzionano)"),
-        ("d_noticer", "Noticer", "notare sensazioni del corpo, emozioni e pensieri nel momento presente "
+        ("d_noticer", "Osservatore", "(Noticer) notare sensazioni del corpo, emozioni e pensieri nel momento presente "
                                  "(1 = disconnesso dal corpo e dalle emozioni, oppure sopraffatto)"),
-        ("d_advisor", "Advisor", "rapporto con la voce interna di regole, giudizi e previsioni "
+        ("d_advisor", "Consigliere", "(Advisor) rapporto con la voce interna di regole, giudizi e previsioni "
                                  "(1 = segue rigidamente un consigliere critico anche quando non aiuta; 5 = lo usa quando è utile e lo lascia andare quando no)"),
-        ("d_valori", "Valori / vitalità (v)", "contatto con ciò che conta e dà vitalità (1 = assente, scelte guidate solo dall'evitamento)"),
-        ("d_self", "Self view", "visione di sé flessibile (1 = etichette rigide su di sé, es. 'sono stupido')"),
-        ("d_social", "Social view", "connessione con gli altri, comprensione della loro prospettiva, appartenenza (1 = isolamento o ostilità)")]},
+        ("d_valori", "Valori / vitalità", "(values) contatto con ciò che conta e dà vitalità (1 = assente, scelte guidate solo dall'evitamento)"),
+        ("d_self", "Visione di sé", "(self view) visione di sé flessibile (1 = etichette rigide su di sé, es. 'sono stupido')"),
+        ("d_social", "Visione sociale", "(social view) connessione con gli altri, comprensione della loro prospettiva, appartenenza (1 = isolamento o ostilità)")]},
 }
 DEFAULT_MODELS = ["hexaflex"]
 PROCESS_INFO = {k: (label, desc) for m in MODELS.values() for k, label, desc in m["processes"]}
