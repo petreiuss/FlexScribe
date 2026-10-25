@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlexScribe</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #1f2328; --muted: #6b7078; --line: #e3e1dc;
+    --accent: #2f6f62; --accent-soft: #e4f0ec; --warn: #a3620a; --warn-soft: #fbf0dc;
+    --err: #b3261e; --err-soft: #fbe7e5; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17191c; --panel: #202327; --text: #e6e6e3; --muted: #9a9ea5; --line: #33373c;
+      --accent: #6cc2ad; --accent-soft: #1f3631; --warn: #e3a54a; --warn-soft: #3a2e19;
+      --err: #f08a80; --err-soft: #3d2120;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header a { color: inherit; text-decoration: none; }
+  header .crumb { color: var(--muted); }
+  header .spacer { flex: 1; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  button, .btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { button.primary { color: #10201c; } }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  .toolbar input[type=search] { flex: 1; min-width: 200px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; cursor: pointer; transition: border-color .15s; }
+  .card:hover { border-color: var(--accent); }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 99px; margin-left: 6px; }
+  .b-busy { background: var(--accent-soft); color: var(--accent); }
+  .b-pending { background: var(--warn-soft); color: var(--warn); }
+  .b-error { background: var(--err-soft); color: var(--err); }
+  .b-done { background: var(--accent-soft); color: var(--accent); }
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } main { padding: 16px; } }
+  .list { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .item { padding: 12px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .item:last-child { border-bottom: 0; }
+  .item:hover { background: var(--bg); }
+  .item.active { background: var(--accent-soft); }
+  .item .t { font-weight: 600; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .panel h2 { margin: 0 0 4px; font-size: 18px; }
+  .tabs { display: flex; gap: 4px; margin: 14px 0 10px; border-bottom: 1px solid var(--line); }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 12px; color: var(--muted); }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+  textarea.transcript { width: 100%; min-height: 420px; resize: vertical; line-height: 1.6; }
+  .seg { display: flex; gap: 12px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+  .seg:hover { background: var(--bg); }
+  .seg.now { background: var(--accent-soft); }
+  .seg .ts { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; min-width: 64px; padding-top: 1px; }
+  audio { width: 100%; margin-top: 12px; }
+  .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 6px; }
+  .progress > div { height: 100%; background: var(--accent); transition: width .4s; }
+  dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); padding: 22px; width: min(460px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  dialog h3 { margin: 0 0 14px; }
+  dialog label { display: block; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+  dialog label input, dialog label select { display: block; width: 100%; margin-top: 4px; }
+  dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .empty { text-align: center; padding: 48px 16px; color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  dialog label textarea { display: block; width: 100%; margin-top: 4px; min-height: 70px; resize: vertical; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .note { line-height: 1.6; padding: 4px 2px; }
+  .note h1, .note h2, .note h3 { font-size: 15px; margin: 18px 0 6px; color: var(--accent); }
+  .note h1:first-child, .note h2:first-child, .note h3:first-child { margin-top: 4px; }
+  .note ul { margin: 4px 0 8px; padding-left: 22px; }
+  table.proc { width: 100%; border-collapse: collapse; }
+  table.proc td { padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.pl { width: 150px; font-weight: 600; } td.sc { white-space: nowrap; width: 230px; } td.ev { color: var(--muted); font-size: 13px; }
+  .scb { padding: 3px 0; width: 30px; margin-right: 3px; font-size: 13px; }
+  .scb.on { font-weight: 700; border-style: dashed; } .scb.on.conf { border-style: solid; }
+  .sc-low { background: var(--warn-soft) !important; color: var(--warn) !important; border-color: var(--warn) !important; }
+  .sc-mid { background: var(--bg) !important; } .sc-high { background: var(--accent-soft) !important; color: var(--accent) !important; border-color: var(--accent) !important; }
+  .sc-na { color: var(--muted); }
+  .procmeta { margin-top: 16px; display: grid; gap: 8px; font-size: 14px; } .procmeta ul { margin: 4px 0 0; padding-left: 20px; }
+  .tag { display: inline-block; background: var(--bg); border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; margin: 2px 4px 2px 0; font-size: 12px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; } .kv { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .trendgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; } @media (max-width: 900px) { .trendgrid { grid-template-columns: 1fr; } }
+  .lg i { display: inline-block; width: 16px; vertical-align: middle; }
+  .chk { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; margin-right: 6px; } .chk i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  table.matrix { border-collapse: collapse; width: 100%; font-size: 13px; } table.matrix th { font-weight: 500; color: var(--muted); text-align: center; padding: 4px; font-size: 12px; }
+  table.matrix td { text-align: center; padding: 5px 4px; border-top: 1px solid var(--line); } table.matrix td.nm, table.matrix th:first-child { text-align: left; }
+  table.matrix tbody tr { cursor: pointer; } table.matrix tbody tr:hover { background: var(--bg); }
+  .cell { display: inline-block; min-width: 26px; padding: 2px 0; border-radius: 6px; border: 1px dashed var(--line); } .cell.conf { border-style: solid; }
+  .note p { margin: 4px 0 8px; }
+  .live { white-space: pre-wrap; line-height: 1.6; border: 1px dashed var(--line); border-radius: 8px; padding: 12px; min-height: 120px; max-height: 520px; overflow: auto; }
+  .ai-warn { font-size: 12px; color: var(--warn); background: var(--warn-soft); border-radius: 6px; padding: 6px 10px; margin: 0 0 10px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="#/">FlexScribe</a></h1>
+  <span class="crumb" id="crumb"></span>
+  <span class="spacer"></span>
+  <span class="muted" id="jobs"></span>
+</header>
+<main id="app"></main>
+
+<dialog id="dlgPatient">
+  <form method="dialog" id="formPatient">
+    <h3>Nuovo paziente</h3>
+    <label>Nome (es. Cognome Nome)<input name="name" required autofocus></label>
+    <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Crea</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgSession">
+  <form method="dialog" id="formSession">
+    <h3>Nuova trascrizione</h3>
+    <label>File audio<input type="file" name="audio" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.flac,.aac,.opus,.amr" required></label>
+    <label>Data della sessione<input type="date" name="session_date" required></label>
+    <label>Titolo (facoltativo)<input name="title" placeholder="es. Prima visita"></label>
+    <label>Modello<select name="model" id="modelSelect"></select></label>
+    <label>Sintesi automatica dopo la trascrizione<select name="auto_skill" id="autoSkillSelect"></select></label>
+    <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Carica e trascrivi</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgSummary">
+  <form method="dialog" id="formSummary">
+    <h3>Nuova sintesi clinica</h3>
+    <label>Modello di sintesi<select name="skill" id="skillSelect"></select><div class="hint" id="skillDesc"></div></label>
+    <label>Istruzioni aggiuntive (facoltative)<textarea name="instructions" placeholder="es. Concentrati sul sonno e sull'aderenza alla terapia"></textarea></label>
+    <p class="hint">La sintesi viene generata in locale con Gemma: nessun dato lascia il computer.</p>
+    <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Genera</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgRevise">
+  <form method="dialog" id="formRevise">
+    <h3>Modifica con Gemma</h3>
+    <label>Cosa vuoi cambiare?<textarea name="instructions" required placeholder="es. Accorcia la sezione Interventi; aggiungi che la paziente ha portato il diario compilato"></textarea></label>
+    <div class="row" id="reviseChips" style="margin:-4px 0 10px"></div>
+    <p class="hint">Gemma rilegge la trascrizione e la sintesi attuale e modifica solo ciò che chiedi. La versione attuale viene conservata: puoi tornare indietro con “Annulla ultima modifica”.</p>
+    <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Applica</button></div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const app = $("#app");
+let config = { models: [], default_model: "" };
+let skills = [];
+let current = { patient: null, session: null, data: null, tab: "text", dirty: false, summary: null, editing: false };
+let summaryTimer = null;
+const SUM_STATUS = { queued: "In coda (attende la fine degli altri lavori)…", loading: "Avvio del modello Gemma…",
+                     reading: "Lettura della trascrizione", writing: "Scrittura della sintesi…", error: "Errore", done: "Completata" };
+const SUM_WRITING = { generate: "Scrittura della sintesi…", revise: "Gemma sta riscrivendo le sezioni da modificare…", grammar: "Ricerca degli errori…" };
+const REVISE_CHIPS = ["Rendila più breve", "Più dettagliata sui processi", "Linguaggio meno tecnico", "Togli le citazioni testuali", "Elenchi puntati più sintetici"];
+
+// minimal Markdown → HTML for the generated notes (headings, lists, bold, italics, paragraphs)
+function md(src) {
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*(?!\s)(.+?)\*/g, "$1<em>$2</em>");
+  let html = "", list = false;
+  for (const line of src.split(/\r?\n/)) {
+    const h = line.match(/^(#{1,4})\s+(.*)/), li = line.match(/^\s*[-*•]\s+(.*)/) || line.match(/^\s*\d+[.)]\s+(.*)/);
+    if (!li && list) { html += "</ul>"; list = false; }
+    if (h) html += `<h${Math.min(h[1].length + 1, 3)}>${inline(h[2])}</h${Math.min(h[1].length + 1, 3)}>`;
+    else if (li) { if (!list) { html += "<ul>"; list = true; } html += `<li>${inline(li[1])}</li>`; }
+    else if (line.trim()) html += `<p>${inline(line)}</p>`;
+  }
+  return html + (list ? "</ul>" : "");
+}
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const enc = encodeURIComponent;
+const fmtDate = d => d ? new Date(d + "T00:00").toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" }) : "";
+const fmtTs = s => { s = Math.floor(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60; return (h ? h + ":" : "") + String(m).padStart(h?2:1,"0") + ":" + String(x).padStart(2,"0"); };
+const STATUS = {
+  queued: ["In coda", "b-busy"], converting: ["Conversione…", "b-busy"], loading: ["Caricamento modello…", "b-busy"], transcribing: ["Trascrizione…", "b-busy"],
+  done: ["Trascritta", "b-done"], pending: ["Da trascrivere", "b-pending"], error: ["Errore", "b-error"], empty: ["Senza audio", "b-pending"],
+};
+const modelLabel = id => (config.models.find(m => m.id === id)?.label || id.replace("ggml-","").replace(".bin","")).replace(/ \(.*\)$/, "");
+const badge = st => `<span class="badge ${STATUS[st][1]}">${STATUS[st][0]}</span>`;
+
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2200); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r.json();
+}
+
+// ------------------------------------------------------------ dashboard
+async function renderDashboard() {
+  $("#crumb").textContent = "";
+  const patients = await api("/api/patients");
+  app.innerHTML = `
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Cerca paziente…">
+      <button class="primary" id="btnNew">+ Nuovo paziente</button>
+    </div>
+    <div class="grid" id="grid"></div>
+    <p class="muted" style="margin-top:20px">Cartella pazienti: ${esc(config.patients_dir)}</p>`;
+  const draw = () => {
+    const q = $("#q").value.toLowerCase();
+    const list = patients.filter(p => p.name.toLowerCase().includes(q));
+    $("#grid").innerHTML = list.length ? list.map(p => `
+      <div class="card" data-p="${esc(p.name)}">
+        <h3>${esc(p.name)}</h3>
+        <div class="muted">${p.sessions} ${p.sessions === 1 ? "sessione" : "sessioni"}${p.last_date ? " · ultima " + fmtDate(p.last_date) : ""}</div>
+        <div style="margin-top:8px">${p.busy ? `<span class="badge b-busy">${p.busy} in corso</span>` : ""}${p.pending ? `<span class="badge b-pending">${p.pending} da trascrivere</span>` : ""}</div>
+      </div>`).join("") : `<div class="empty" style="grid-column:1/-1">${patients.length ? "Nessun risultato" : "Nessun paziente. Crea il primo con “Nuovo paziente”."}</div>`;
+    document.querySelectorAll(".card").forEach(c => c.onclick = () => location.hash = "#/p/" + enc(c.dataset.p));
+  };
+  $("#q").oninput = draw;
+  $("#btnNew").onclick = () => { $("#formPatient").reset(); $("#dlgPatient").showModal(); };
+  draw();
+}
+
+// ------------------------------------------------------------ patient page
+async function renderPatient(patient, sessionId) {
+  $("#crumb").textContent = "/ " + patient;
+  const data = await api("/api/patients/" + enc(patient));
+  current.patient = patient;
+  if (!sessionId && data.sessions.length) sessionId = data.sessions[0].id;
+  app.innerHTML = `
+    <div class="toolbar">
+      <button onclick="location.hash='#/'">← Pazienti</button>
+      <span class="spacer" style="flex:1"></span>
+      <button id="btnTrend" title="Andamento dei processi nelle sedute">Andamento</button>
+      <button class="primary" id="btnUpload">+ Nuova trascrizione</button>
+    </div>
+    <div class="layout">
+      <div class="list" id="sessions">${data.sessions.length ? data.sessions.map(s => `
+        <div class="item ${s.id === sessionId ? "active" : ""}" data-s="${esc(s.id)}">
+          <div class="t">${esc(fmtDate(s.date))} ${badge(s.status)}</div>
+          <div class="muted">${esc(s.title)}${s.has_summary ? " · sintesi ✓" : ""}</div>
+          ${["queued","converting","loading","transcribing"].includes(s.status) ? `<div class="progress"><div style="width:${s.progress||0}%"></div></div>` : ""}
+        </div>`).join("") : `<div class="empty">Nessuna sessione</div>`}
+      </div>
+      <div id="detail"></div>
+    </div>`;
+  document.querySelectorAll("#sessions .item").forEach(i => i.onclick = () => location.hash = `#/p/${enc(patient)}/${enc(i.dataset.s)}`);
+  $("#btnUpload").onclick = openUpload;
+  $("#btnTrend").onclick = () => location.hash = "#/a/" + enc(patient);
+  if (sessionId) renderSession(patient, sessionId);
+  else $("#detail").innerHTML = `<div class="panel empty">Carica un file audio per creare la prima trascrizione.</div>`;
+}
+
+async function renderSession(patient, sessionId) {
+  const s = await api(`/api/patients/${enc(patient)}/sessions/${enc(sessionId)}`);
+  if (current.session !== sessionId) { current.summary = null; current.editing = false; }
+  current.session = sessionId; current.data = s; current.dirty = false;
+  clearTimeout(summaryTimer);
+  const sumActive = s.summary_job && !["done", "error"].includes(s.summary_job.status);
+  const procActive = s.processi_job && !["done", "error"].includes(s.processi_job.status);
+  const busy = ["queued","converting","loading","transcribing"].includes(s.status);
+  const base = `/api/patients/${enc(patient)}/sessions/${enc(sessionId)}`;
+  $("#detail").innerHTML = `
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <div><h2>${esc(s.title)}</h2><div class="muted">${esc(fmtDate(s.date))}${s.meta.model ? " · " + esc(modelLabel(s.meta.model)) : ""}${s.meta.transcribed_at ? " · trascritta il " + esc(s.meta.transcribed_at) : ""}</div></div>
+        <div class="row">
+          <button id="btnFolder" title="Apri la cartella in Esplora file">Apri cartella</button>
+          ${s.has_audio && !busy ? `<button id="btnRedo">${s.status === "done" ? "Ritrascrivi" : "Trascrivi"}</button>` : ""}
+        </div>
+      </div>
+      ${s.has_audio ? `<audio id="player" controls preload="metadata" src="${base}/audio"></audio>` : ""}
+      ${busy ? `<div style="margin-top:16px">${badge(s.status)} <span class="muted">${s.progress||0}%</span><div class="progress"><div style="width:${s.progress||0}%"></div></div><p class="muted">Puoi chiudere questa pagina: la trascrizione continua in background.</p></div>` : ""}
+      ${s.status === "error" ? `<p class="badge b-error" style="display:block;margin:14px 0 0;padding:10px;border-radius:8px;white-space:pre-wrap">${esc(s.error)}</p>` : ""}
+      ${s.status === "done" ? `
+        <div class="tabs"><button data-tab="text">Testo</button><button data-tab="seg">Segmenti con orari</button><button data-tab="sum">Sintesi clinica${sumActive ? '<span class="dot"></span>' : s.summaries.length ? ` (${s.summaries.length})` : ""}</button><button data-tab="proc">Processi${procActive ? '<span class="dot"></span>' : s.processi ? " ✓" : ""}</button></div>
+        <div id="tabBody"></div>` : ""}
+    </div>`;
+  $("#btnFolder").onclick = () => api(base + "/open", { method: "POST" });
+  const redo = $("#btnRedo");
+  if (redo) redo.onclick = async () => {
+    if (s.status === "done" && !confirm("Ritrascrivere? Il testo attuale verrà sostituito.")) return;
+    await api(base + "/transcribe?model=" + enc(config.default_model), { method: "POST" });
+    toast("Aggiunta alla coda"); route();
+  };
+  if (s.status === "done") {
+    document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+      if (current.dirty && !confirm("Ci sono modifiche non salvate. Cambiare scheda?")) return;
+      current.dirty = false; current.editing = false; current.tab = b.dataset.tab; drawTab();
+    });
+    drawTab();
+    if (sumActive) pollSummary();
+    if (procActive) pollProcess();
+  }
+}
+
+// ------------------------------------------------------------ clinical summary tab
+function drawSummary(body) {
+  const s = current.data, job = s.summary_job;
+  const active = job && !["done", "error"].includes(job.status);
+  const base = `/api/patients/${enc(current.patient)}/sessions/${enc(current.session)}`;
+  if (!current.summary || !s.summaries.some(x => x.skill === current.summary)) current.summary = s.summaries[0]?.skill || null;
+  const sel = s.summaries.find(x => x.skill === current.summary);
+  const info = sel && s.meta.summaries?.[sel.skill];
+
+  let html = `<div class="row" style="margin-bottom:12px">
+      ${s.summaries.length > 1 ? `<select id="sumPick">${s.summaries.map(x => `<option value="${esc(x.skill)}" ${x.skill === current.summary ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : ""}
+      <span style="flex:1"></span>
+      <button class="primary" id="btnNewSum" ${active ? "disabled" : ""}>+ Nuova sintesi</button>
+    </div>`;
+  if (active) {
+    const label = (job.status === "writing" ? SUM_WRITING[job.mode || "generate"] : SUM_STATUS[job.status])
+                + (job.status === "reading" ? ` ${job.progress || 0}%` : "");
+    html += `<div class="muted" id="sumStatus">${esc(label)}</div>
+      ${job.status === "reading" ? `<div class="progress"><div style="width:${job.progress||0}%"></div></div>` : ""}
+      <div class="live" id="sumLive" style="margin-top:10px">${esc(job.partial || "")}</div>`;
+  } else if (job && job.status === "error") {
+    html += `<p class="badge b-error" style="display:block;margin:0 0 12px;padding:10px;border-radius:8px;white-space:pre-wrap">${esc(job.error)}</p>`;
+  }
+  if (!active && sel) {
+    html += `<p class="ai-warn">Bozza generata dall'IA (${esc(info?.llm || "LLM locale")}${info?.generated_at ? ", " + esc(info.generated_at) : ""}): verificala sempre prima di usarla.</p>
+      ${current.editing ? `<textarea class="transcript" id="sumTxt"></textarea>` : `<div class="note" id="sumView">${md(sel.text)}</div>`}
+      <div class="row" style="margin-top:12px">
+        ${current.editing ? `<button class="primary" id="btnSumSave">Salva</button><button id="btnSumSaveCheck">Salva e controlla grammatica</button><button id="btnSumCancel">Annulla</button>`
+                          : `<button class="primary" id="btnSumAI" title="Chiedi a Gemma di modificare la sintesi">Modifica con Gemma</button>
+                             <button id="btnSumEdit" title="Modifica il testo a mano">Modifica testo</button>
+                             <button id="btnSumGrammar" title="Corregge ortografia e grammatica senza cambiare il contenuto">Controllo grammatica</button>
+                             <button id="btnSumCopy">Copia</button>
+                             <button id="btnSumRedo" title="Genera di nuovo da zero">Rigenera</button>
+                             ${sel.versions ? `<button id="btnSumUndo" title="Torna alla versione precedente">Annulla ultima modifica</button>` : ""}`}
+      </div>
+      ${lastOperation(info)}
+      ${info?.history?.length > 1 ? `<p class="hint" style="margin-top:10px">Cronologia: ${info.history.map(h => esc(h.at.slice(11)) + " " + esc(h.action)).join(" · ")}</p>` : ""}`;
+  } else if (!active && !s.summaries.length) {
+    html += `<div class="empty">Nessuna sintesi per questa sessione.<br>Usa “Nuova sintesi” per generarne una dalla trascrizione con Gemma.</div>`;
+  }
+  body.innerHTML = html;
+
+  $("#btnNewSum").onclick = () => openSummaryDialog();
+  const pick = $("#sumPick"); if (pick) pick.onchange = () => { current.summary = pick.value; current.editing = false; drawTab(); };
+  if ($("#btnSumEdit")) {
+    $("#btnSumEdit").onclick = () => { current.editing = true; drawTab(); };
+    $("#btnSumAI").onclick = () => openReviseDialog();
+    $("#btnSumGrammar").onclick = () => startSummaryJob(sel.skill, "grammar", "");
+    $("#btnSumCopy").onclick = () => { navigator.clipboard.writeText(sel.text); toast("Copiato negli appunti"); };
+    $("#btnSumRedo").onclick = () => openSummaryDialog(sel.skill, info?.instructions);
+    const undo = $("#btnSumUndo");
+    if (undo) undo.onclick = async () => {
+      if (!confirm("Tornare alla versione precedente? La versione attuale verrà eliminata.")) return;
+      await api(`${base}/summary/${enc(sel.skill)}/restore`, { method: "POST" });
+      toast("Versione precedente ripristinata"); renderSession(current.patient, current.session);
+    };
+  }
+  if ($("#sumTxt")) {
+    $("#sumTxt").value = sel.text;
+    $("#sumTxt").oninput = () => { current.dirty = true; };
+    $("#btnSumCancel").onclick = () => { current.dirty = false; current.editing = false; drawTab(); };
+    const save = async () => {
+      await api(`${base}/summary/${enc(sel.skill)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("#sumTxt").value }) });
+      current.dirty = false; current.editing = false;
+    };
+    $("#btnSumSave").onclick = async () => { await save(); toast("Sintesi salvata"); renderSession(current.patient, current.session); };
+    $("#btnSumSaveCheck").onclick = async () => { await save(); startSummaryJob(sel.skill, "grammar", ""); };
+  }
+}
+
+// what the last Gemma operation changed (corrections applied / sections rewritten) and how long it took
+function lastOperation(info) {
+  const h = info?.history?.[info.history.length - 1];
+  if (!h || h.action === "generata") return "";
+  const secs = h.seconds ? ` in ${h.seconds} s` : "";
+  let body = "";
+  if (h.corrections) {
+    body = h.corrections.length
+      ? `${h.corrections.length} correzion${h.corrections.length === 1 ? "e" : "i"}: ` +
+        h.corrections.map(c => `<s>${esc(c.da)}</s> → <strong>${esc(c.a)}</strong>`).join(" · ")
+      : "nessun errore trovato";
+    if (h.skipped?.length) {
+      const why = [...new Set(h.skipped.map(s => s.motivo || "testo non trovato"))].join(", ");
+      body += ` <span class="muted">(${h.skipped.length} non applicat${h.skipped.length === 1 ? "a" : "e"}: ${esc(why)})</span>`;
+    }
+  } else if (h.sections) {
+    body = "sezioni modificate: " + h.sections.map(esc).join(", ");
+  }
+  return body ? `<p class="hint" style="margin-top:10px">Ultima operazione (${esc(h.action)}${secs}): ${body}</p>` : "";
+}
+
+async function startSummaryJob(skill, mode, instructions) {
+  try {
+    await api(`/api/patients/${enc(current.patient)}/sessions/${enc(current.session)}/summary`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ skill, mode, instructions }) });
+    current.tab = "sum"; current.summary = skill;
+    toast({ generate: "Sintesi avviata", revise: "Modifica avviata", grammar: "Controllo grammaticale avviato" }[mode]);
+    renderSession(current.patient, current.session);
+  } catch (e) { alert(e.message); }
+}
+
+function openReviseDialog() {
+  const f = $("#formRevise"); f.reset();
+  $("#reviseChips").innerHTML = REVISE_CHIPS.map(c => `<button type="button" class="chip" style="font-size:12px;padding:3px 10px">${esc(c)}</button>`).join("");
+  $("#reviseChips").querySelectorAll("button").forEach(b => b.onclick = () => {
+    f.instructions.value = (f.instructions.value.trim() ? f.instructions.value.trim() + "; " : "") + b.textContent;
+  });
+  $("#dlgRevise").showModal();
+}
+
+async function pollSummary() {
+  clearTimeout(summaryTimer);
+  const patient = current.patient, session = current.session;
+  try {
+    const job = await api(`/api/patients/${enc(patient)}/sessions/${enc(session)}/summary-job`);
+    if (patient !== current.patient || session !== current.session) return;
+    current.data.summary_job = job;
+    if (!job || ["done", "error"].includes(job.status)) {
+      if (job?.status === "done") { current.summary = job.skill; toast("Sintesi pronta"); }
+      return renderSession(patient, session);
+    }
+    if (current.tab === "sum") {
+      const live = $("#sumLive");
+      const atBottom = live && live.scrollHeight - live.scrollTop - live.clientHeight < 40;
+      drawTab();
+      const nl = $("#sumLive"); if (nl && atBottom) nl.scrollTop = nl.scrollHeight;
+    }
+  } catch {}
+  summaryTimer = setTimeout(pollSummary, 1500);
+}
+
+function openSummaryDialog(skillId, instructions) {
+  const f = $("#formSummary"); f.reset();
+  $("#skillSelect").innerHTML = skills.map(k => `<option value="${esc(k.id)}">${esc(k.name)}</option>`).join("");
+  $("#skillSelect").value = skillId || config.default_skill || skills[0]?.id;
+  const desc = () => $("#skillDesc").textContent = skills.find(k => k.id === $("#skillSelect").value)?.description || "";
+  $("#skillSelect").onchange = desc; desc();
+  f.instructions.value = instructions || "";
+  $("#dlgSummary").showModal();
+}
+
+// ------------------------------------------------------------ process card (hexaflex) per session
+const PROC_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"];
+const PROC_STATUS = { queued: "In coda…", loading: "Avvio di Gemma…", reading: "Lettura della trascrizione", writing: "Compilazione della scheda…" };
+const ESITO = { "svolti": "svolti", "parziali": "parzialmente svolti", "non svolti": "non svolti", "non discussi": "non discussi" };
+const scoreClass = v => !v ? "sc-na" : v <= 2 ? "sc-low" : v === 3 ? "sc-mid" : "sc-high";
+
+function drawProcess(body) {
+  const s = current.data, card = s.processi, job = s.processi_job;
+  const base = `/api/patients/${enc(current.patient)}/sessions/${enc(current.session)}`;
+  const active = job && !["done", "error"].includes(job.status);
+  let html = "";
+  if (active) {
+    html += `<p class="muted">${esc(PROC_STATUS[job.status] || "")}${job.status === "reading" ? ` ${job.progress || 0}%` : ""}</p>
+             ${job.status === "reading" ? `<div class="progress"><div style="width:${job.progress||0}%"></div></div>` : ""}`;
+  } else if (job?.status === "error") {
+    html += `<p class="badge b-error" style="display:block;padding:10px;border-radius:8px;white-space:pre-wrap">${esc(job.error)}</p>`;
+  }
+  if (!card && !active) {
+    html += `<div class="empty">Nessuna scheda dei processi per questa seduta.<br>Gemma valuta i 6 processi dell'hexaflex (più l'autocompassione) con un esempio dalla trascrizione.<br><br>
+             <button class="primary" id="btnProcNew">Analizza processi</button></div>`;
+  }
+  if (card) {
+    html += `<p class="ai-warn">Punteggi proposti da Gemma (${esc(card.generated_at || "")}): clicca un valore per confermarlo o correggerlo. 1 = rigidità, 5 = flessibilità, “–” = nessuna evidenza.</p>
+      <table class="proc"><tbody>${Object.entries(card.processi).map(([k, p]) => `
+        <tr><td class="pl">${esc(p.label)}<div class="hint">${p.confirmed ? "confermato" : "proposto da Gemma"}</div></td>
+          <td class="sc">${[0,1,2,3,4,5].map(v => `<button class="scb ${(p.score || 0) === v ? "on " + scoreClass(v) + (p.confirmed ? " conf" : "") : ""}" data-k="${k}" data-v="${v}" title="${v ? v : "nessuna evidenza"}">${v || "–"}</button>`).join("")}</td>
+          <td class="ev">${esc(p.evidence || "")}</td></tr>`).join("")}</tbody></table>
+      <div class="row" style="margin-top:12px">
+        ${card.all_confirmed ? `<span class="muted">Tutti i punteggi confermati ✓</span>` : `<button class="primary" id="btnProcConfirm">Conferma tutti i proposti</button>`}
+        <button id="btnProcRedo" ${active ? "disabled" : ""}>Rianalizza</button>
+        <button id="btnProcTrend">Vedi andamento</button>
+      </div>
+      <div class="procmeta">
+        ${card.temi?.length ? `<div><b>Temi</b> ${card.temi.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+        ${card.valori?.length ? `<div><b>Valori emersi</b> ${card.valori.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+        ${card.compiti?.esito ? `<div><b>Compiti della seduta precedente</b> ${esc(ESITO[card.compiti.esito] || card.compiti.esito)}${card.compiti.nota ? " — " + esc(card.compiti.nota) : ""}</div>` : ""}
+        ${card.azioni?.length ? `<div><b>Azioni concordate</b><ul>${card.azioni.map(a => `<li>${esc(a)}</li>`).join("")}</ul></div>` : ""}
+        ${card.rischio ? `<div><b>Rischio</b> ${esc(card.rischio)}</div>` : ""}
+      </div>`;
+  }
+  body.innerHTML = html;
+  const run = async () => { await api(base + "/processi", { method: "POST" }); toast("Analisi dei processi avviata"); renderSession(current.patient, current.session); };
+  if ($("#btnProcNew")) $("#btnProcNew").onclick = run;
+  if ($("#btnProcRedo")) $("#btnProcRedo").onclick = () => { if (confirm("Rianalizzare? I punteggi che hai confermato restano.")) run(); };
+  if ($("#btnProcTrend")) $("#btnProcTrend").onclick = () => location.hash = "#/a/" + enc(current.patient);
+  if ($("#btnProcConfirm")) $("#btnProcConfirm").onclick = async () => {
+    s.processi = await api(base + "/processi/conferma", { method: "POST" }); toast("Punteggi confermati"); drawTab();
+  };
+  body.querySelectorAll(".scb").forEach(b => b.onclick = async () => {
+    s.processi = await api(`${base}/processi/${b.dataset.k}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+                                                              body: JSON.stringify({ score: +b.dataset.v }) });
+    drawTab();
+  });
+}
+
+let processTimer = null;
+async function pollProcess() {
+  clearTimeout(processTimer);
+  const patient = current.patient, session = current.session;
+  try {
+    const job = await api(`/api/patients/${enc(patient)}/sessions/${enc(session)}/processi-job`);
+    if (patient !== current.patient || session !== current.session) return;
+    if (!job || ["done", "error"].includes(job.status)) {
+      if (job?.status === "done") toast("Scheda dei processi pronta");
+      return renderSession(patient, session);
+    }
+    current.data.processi_job = job;
+    if (current.tab === "proc") drawTab();
+  } catch {}
+  processTimer = setTimeout(pollProcess, 2000);
+}
+
+// ------------------------------------------------------------ patient trend (andamento)
+let trendTimer = null;
+const fmtShort = d => d ? new Date(d + "T00:00").toLocaleDateString("it-IT", { day: "2-digit", month: "short" }) : "?";
+const mean = a => { const v = a.filter(x => x); return v.length ? v.reduce((p, c) => p + c, 0) / v.length : null; };
+
+function radarSVG(labels, series) {  // series: [{values:[...], color, dash, label}]
+  const W = 480, H = 330, cx = W / 2, cy = 165, R = 112, n = labels.length;
+  const pt = (i, v) => { const a = -Math.PI / 2 + 2 * Math.PI * i / n; return [cx + Math.cos(a) * R * v / 5, cy + Math.sin(a) * R * v / 5]; };
+  let g = "";
+  for (let l = 1; l <= 5; l++) g += `<polygon points="${labels.map((_, i) => pt(i, l).join(",")).join(" ")}" fill="none" stroke="var(--line)" stroke-width="1"/>`;
+  labels.forEach((lab, i) => {
+    const [x, y] = pt(i, 5), [tx, ty] = pt(i, 6.15);
+    g += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="var(--line)"/>`;
+    g += `<text x="${tx}" y="${ty + 4}" text-anchor="${Math.abs(tx - cx) < 10 ? "middle" : tx > cx ? "start" : "end"}" font-size="11" fill="var(--muted)">${esc(lab)}</text>`;
+  });
+  series.forEach(s => {
+    const pts = s.values.map((v, i) => pt(i, v || 0));
+    g += `<polygon points="${pts.map(p => p.join(",")).join(" ")}" fill="${s.color}" fill-opacity="${s.dash ? 0.04 : 0.13}" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ""}/>`;
+    pts.forEach((p, i) => { if (s.values[i]) g += `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="${s.color}"><title>${esc(labels[i])}: ${s.values[i]}</title></circle>`; });
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:480px" role="img" aria-label="Hexaflex">${g}</svg>`;
+}
+
+function linesSVG(sessions, procs, shown) {
+  const W = 560, H = 260, L = 30, Rt = 26, T = 12, B = 34, n = sessions.length;
+  const x = i => n === 1 ? (L + W - Rt) / 2 : L + (W - L - Rt) * i / (n - 1), y = v => T + (H - T - B) * (5 - v) / 4;
+  let g = "";
+  for (let v = 1; v <= 5; v++) g += `<line x1="${L}" x2="${W - Rt}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 8}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${v}</text>`;
+  const step = Math.ceil(n / 10);
+  sessions.forEach((s, i) => { if (i % step === 0 || i === n - 1) g += `<text x="${x(i)}" y="${H - 12}" font-size="11" text-anchor="middle" fill="var(--muted)">${esc(fmtShort(s.date))}</text>`; });
+  procs.forEach((p, pi) => {
+    if (!shown.has(p.key)) return;
+    const off = (pi - 3) * 0.06;  // small vertical offset so lines with equal scores do not hide each other
+    const pts = sessions.map((s, i) => [i, s.card?.processi[p.key]?.score]).filter(([, v]) => v);
+    if (pts.length > 1) g += `<polyline points="${pts.map(([i, v]) => `${x(i)},${y(v + off)}`).join(" ")}" fill="none" stroke="${PROC_COLORS[pi]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach(([i, v]) => { const conf = sessions[i].card.processi[p.key].confirmed;
+      g += `<circle cx="${x(i)}" cy="${y(v + off)}" r="4" fill="${conf ? PROC_COLORS[pi] : "var(--panel)"}" stroke="${PROC_COLORS[pi]}" stroke-width="2"><title>${esc(p.label)} · ${esc(fmtShort(sessions[i].date))}: ${v}${conf ? "" : " (proposto)"}</title></circle>`; });
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Andamento dei processi">${g}</svg>`;
+}
+
+async function renderTrend(patient, keepState) {
+  clearTimeout(trendTimer);
+  $("#crumb").textContent = "/ " + patient + " / andamento";
+  const d = await api(`/api/patients/${enc(patient)}/andamento`);
+  current.patient = patient;
+  const st = keepState && renderTrend.state || { a: null, b: null, shown: new Set(d.hexaflex) };
+  renderTrend.state = st;
+  const withCard = d.sessions.filter(s => s.card), missing = d.sessions.filter(s => s.has_transcript && !s.card && !s.job);
+  const running = d.sessions.filter(s => s.job && !["done", "error"].includes(s.job.status));
+  if (!st.a && withCard.length) st.a = withCard[0].id;
+  if (!st.b && withCard.length) st.b = withCard[withCard.length - 1].id;
+  const hexLabels = d.hexaflex.map(k => d.processes.find(p => p.key === k).label);
+  const flex = s => mean(d.hexaflex.map(k => s.card?.processi[k]?.score));
+  const first = withCard[0], last = withCard[withCard.length - 1];
+  const hw = withCard.map(s => s.card.compiti?.esito).filter(e => e && e !== "non discussi");
+  const fmt1 = v => v == null ? "–" : v.toFixed(1).replace(".", ",");
+
+  app.innerHTML = `
+    <div class="toolbar">
+      <button onclick="location.hash='#/p/${enc(patient)}'">← ${esc(patient)}</button>
+      <span style="flex:1"></span>
+      ${running.length ? `<span class="muted">${running.length} in analisi…</span>` : ""}
+      ${missing.length ? `<button class="primary" id="btnBackfill">Analizza ${missing.length} sedut${missing.length === 1 ? "a" : "e"} mancant${missing.length === 1 ? "e" : "i"}</button>` : ""}
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="muted">Sedute analizzate</div><div class="kv">${withCard.length} di ${d.sessions.filter(s => s.has_transcript).length}</div></div>
+      <div class="kpi"><div class="muted">Flessibilità media (hexaflex)</div><div class="kv">${withCard.length > 1 ? fmt1(flex(first)) + " → " + fmt1(flex(last)) : fmt1(last && flex(last))}</div></div>
+      <div class="kpi"><div class="muted">Compiti svolti (anche in parte)</div><div class="kv">${hw.length ? hw.filter(e => e !== "non svolti").length + " / " + hw.length : "–"}</div></div>
+    </div>
+    ${!withCard.length ? `<div class="panel empty">Nessuna seduta analizzata. Le schede si creano automaticamente dopo ogni nuova sintesi${missing.length ? ", oppure usa “Analizza sedute mancanti”" : ""}.</div>` : `
+    <div class="trendgrid">
+      <div class="panel">
+        <h3 style="margin:0 0 8px;font-size:15px">Hexaflex</h3>
+        <div class="row" style="font-size:13px">
+          <span class="lg"><i style="border-top:2px dashed #898781"></i></span><select id="selA">${withCard.map(s => `<option value="${esc(s.id)}" ${s.id === st.a ? "selected" : ""}>${esc(fmtShort(s.date))} · ${esc(s.title)}</option>`).join("")}</select>
+          <span class="lg"><i style="border-top:2px solid #2a78d6"></i></span><select id="selB">${withCard.map(s => `<option value="${esc(s.id)}" ${s.id === st.b ? "selected" : ""}>${esc(fmtShort(s.date))} · ${esc(s.title)}</option>`).join("")}</select>
+        </div>
+        ${radarSVG(hexLabels, [
+          { values: d.hexaflex.map(k => withCard.find(s => s.id === st.a)?.card.processi[k].score), color: "#898781", dash: true },
+          { values: d.hexaflex.map(k => withCard.find(s => s.id === st.b)?.card.processi[k].score), color: "#2a78d6" }])}
+      </div>
+      <div class="panel">
+        <h3 style="margin:0 0 8px;font-size:15px">Andamento per processo</h3>
+        <div class="row" style="font-size:12px;gap:6px">${d.processes.map((p, i) => `<label class="chk"><input type="checkbox" data-k="${p.key}" ${st.shown.has(p.key) ? "checked" : ""}><i style="background:${PROC_COLORS[i]}"></i>${esc(p.label)}</label>`).join("")}</div>
+        ${linesSVG(withCard, d.processes, st.shown)}
+        <div class="hint">Punto pieno = confermato dal terapeuta · punto vuoto = proposto da Gemma · sedute senza evidenza saltate</div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px;overflow-x:auto">
+      <table class="matrix"><thead><tr><th>Seduta</th>${d.processes.map(p => `<th>${esc(p.label)}</th>`).join("")}<th>Temi</th><th>Compiti prec.</th></tr></thead>
+      <tbody>${d.sessions.filter(s => s.has_transcript).map(s => `<tr data-s="${esc(s.id)}">
+        <td class="nm">${esc(fmtShort(s.date))}<div class="hint">${esc(s.title)}</div></td>
+        ${s.card ? d.processes.map(p => { const c = s.card.processi[p.key]; return `<td><span class="cell ${scoreClass(c.score)} ${c.confirmed ? "conf" : ""}" title="${esc(c.evidence || "nessuna evidenza")}">${c.score || "–"}</span></td>`; }).join("")
+                 : `<td colspan="${d.processes.length}" class="muted">${s.job ? esc(PROC_STATUS[s.job.status] || s.job.status) : "non analizzata"}</td>`}
+        <td class="hint">${s.card ? s.card.temi.slice(0, 3).map(esc).join(", ") : ""}</td>
+        <td class="hint">${s.card?.compiti?.esito ? esc(s.card.compiti.esito) : ""}</td></tr>`).join("")}</tbody></table>
+      <div class="hint" style="margin-top:6px">Clicca una seduta per vedere le evidenze e confermare i punteggi.</div>
+    </div>`}`;
+
+  if ($("#btnBackfill")) $("#btnBackfill").onclick = async () => {
+    const r = await api(`/api/patients/${enc(patient)}/andamento/analizza`, { method: "POST" });
+    toast(`${r.queued} sedute in analisi`); renderTrend(patient, true);
+  };
+  if ($("#selA")) { $("#selA").onchange = e => { st.a = e.target.value; renderTrend(patient, true); };
+                    $("#selB").onchange = e => { st.b = e.target.value; renderTrend(patient, true); }; }
+  app.querySelectorAll(".chk input").forEach(c => c.onchange = () => { c.checked ? st.shown.add(c.dataset.k) : st.shown.delete(c.dataset.k); renderTrend(patient, true); });
+  app.querySelectorAll(".matrix tbody tr").forEach(r => r.onclick = () => { current.tab = "proc"; location.hash = `#/p/${enc(patient)}/${enc(r.dataset.s)}`; });
+  if (running.length || d.sessions.some(s => s.job && s.job.status === "queued")) trendTimer = setTimeout(() => { if (location.hash.startsWith("#/a/")) renderTrend(patient, true); }, 4000);
+}
+
+function drawTab() {
+  const s = current.data, body = $("#tabBody");
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === current.tab));
+  if (current.tab === "sum") return drawSummary(body);
+  if (current.tab === "proc") return drawProcess(body);
+  if (current.tab === "text") {
+    body.innerHTML = `<textarea class="transcript" id="txt"></textarea>
+      <div class="row" style="margin-top:10px"><button class="primary" id="btnSave" disabled>Salva modifiche</button><button id="btnCopy">Copia</button><span class="muted" id="saveState"></span></div>`;
+    $("#txt").value = s.text;
+    $("#txt").oninput = () => { current.dirty = true; $("#btnSave").disabled = false; $("#saveState").textContent = "Modifiche non salvate"; };
+    $("#btnSave").onclick = async () => {
+      await api(`/api/patients/${enc(current.patient)}/sessions/${enc(current.session)}/transcript`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("#txt").value }) });
+      s.text = $("#txt").value; current.dirty = false; $("#btnSave").disabled = true; $("#saveState").textContent = "Salvato"; toast("Trascrizione salvata");
+    };
+    $("#btnCopy").onclick = () => { navigator.clipboard.writeText($("#txt").value); toast("Copiato negli appunti"); };
+  } else {
+    body.innerHTML = s.segments.length ? s.segments.map((g, i) => `<div class="seg" data-i="${i}" data-t="${g.from}"><span class="ts">${fmtTs(g.from)}</span><span>${esc(g.text)}</span></div>`).join("")
+      : `<div class="empty">Nessun segmento disponibile</div>`;
+    const player = $("#player");
+    body.querySelectorAll(".seg").forEach(el => el.onclick = () => { if (player) { player.currentTime = +el.dataset.t; player.play(); } });
+    if (player) player.ontimeupdate = () => {
+      const t = player.currentTime;
+      body.querySelectorAll(".seg").forEach(el => { const g = s.segments[el.dataset.i]; el.classList.toggle("now", t >= g.from && t < g.to); });
+    };
+  }
+}
+
+function openUpload() {
+  const f = $("#formSession"); f.reset();
+  f.session_date.value = new Date().toISOString().slice(0, 10);
+  $("#modelSelect").innerHTML = config.models.map(m => `<option value="${esc(m.id)}" ${m.id === config.default_model ? "selected" : ""}>${esc(m.label)}</option>`).join("");
+  $("#autoSkillSelect").innerHTML = `<option value="">Nessuna</option>` +
+    skills.map(k => `<option value="${esc(k.id)}" ${k.id === config.default_skill ? "selected" : ""}>${esc(k.name)}</option>`).join("");
+  $("#dlgSession").showModal();
+}
+
+// ------------------------------------------------------------ dialogs
+$("#dlgPatient").addEventListener("close", async () => {
+  if ($("#dlgPatient").returnValue !== "ok") return;
+  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value }) });
+        location.hash = "#/p/" + enc(r.name); } catch (e) { alert(e.message); }
+});
+$("#dlgSession").addEventListener("close", async () => {
+  if ($("#dlgSession").returnValue !== "ok") return;
+  const fd = new FormData($("#formSession"));
+  toast("Caricamento in corso…");
+  try { const r = await api(`/api/patients/${enc(current.patient)}/sessions`, { method: "POST", body: fd });
+        toast("Trascrizione avviata"); location.hash = `#/p/${enc(current.patient)}/${enc(r.id)}`; } catch (e) { alert(e.message); }
+});
+$("#dlgSummary").addEventListener("close", async () => {
+  if ($("#dlgSummary").returnValue !== "ok") return;
+  const f = $("#formSummary");
+  startSummaryJob(f.skill.value, "generate", f.instructions.value);
+});
+$("#dlgRevise").addEventListener("close", () => {
+  if ($("#dlgRevise").returnValue !== "ok") return;
+  startSummaryJob(current.summary, "revise", $("#formRevise").instructions.value);
+});
+
+// ------------------------------------------------------------ jobs polling
+async function pollJobs() {
+  try {
+    const all = await api("/api/jobs");
+    const nSum = all.filter(j => j.kind === "summary" && !["done","error"].includes(j.status)).length;
+    const jobs = all.filter(j => j.kind === "transcribe");  // Gemma jobs refresh through their own polling
+    const active = jobs.filter(j => !["done","error"].includes(j.status));
+    $("#jobs").textContent = [active.length ? `${active.length} trascrizion${active.length === 1 ? "e" : "i"} in corso` : "",
+                              nSum ? `${nSum} sintes${nSum === 1 ? "i" : "i"} in corso` : ""].filter(Boolean).join(" · ");
+    // refresh the open page while something on it is running, unless the user is editing
+    const relevant = jobs.some(j => j.patient === current.patient);
+    if (relevant && !current.dirty && location.hash.startsWith("#/p/")) {
+      const signature = JSON.stringify(jobs.filter(j => j.patient === current.patient).map(j => [j.session, j.status, j.progress]));
+      if (signature !== pollJobs.last) { pollJobs.last = signature; route(true); }
+    } else if (!location.hash.startsWith("#/p/") && active.length !== pollJobs.lastCount) { pollJobs.lastCount = active.length; if (pollJobs.lastCount !== undefined) route(true); }
+  } catch {}
+}
+
+// ------------------------------------------------------------ router
+async function route(soft) {
+  const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  try {
+    if (parts[0] === "a" && parts[1]) {
+      await renderTrend(parts[1]);
+    } else if (parts[0] === "p" && parts[1]) {
+      await renderPatient(parts[1], parts[2]);
+    } else { current.patient = null; await renderDashboard(); }
+  } catch (e) { app.innerHTML = `<div class="panel empty">${esc(e.message)}</div>`; }
+}
+window.addEventListener("hashchange", () => {
+  if (current.dirty && !confirm("Ci sono modifiche non salvate. Uscire comunque?")) return;
+  current.dirty = false; route();
+});
+window.addEventListener("beforeunload", e => { if (current.dirty) e.preventDefault(); });
+
+(async () => {
+  [config, skills] = await Promise.all([api("/api/config"), api("/api/skills")]);
+  await route();
+  setInterval(pollJobs, 2000);
+})();
+</script>
+</body>
+</html>

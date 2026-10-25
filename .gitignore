@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# machine-specific settings (created on first run with the defaults)
+config.json
+
+# downloaded or generated at runtime
+models/
+whisper.cpp/
+ffmpeg.exe
+*.log
+test_audio/
+test_ui/
+
+# never commit patient data (it lives outside this folder, in patients_dir, but just in case)
+Pazienti/
+pazienti/
+**/transcript.txt
+**/transcript.json
+**/sintesi_*.md
+**/processi.json
+**/audio.*
+**/audio16k.wav
