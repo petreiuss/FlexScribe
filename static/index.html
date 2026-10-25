@@ -74,6 +74,7 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
+  a { color: var(--accent); }
   .chip { border-radius: 99px; padding: 4px 12px; font-size: 13px; } .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
   .grouptitle { font-size: 15px; margin: 18px 0 10px; } .grouptitle:first-child { margin-top: 0; }
   .menu { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 220px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
@@ -123,7 +124,8 @@
 <dialog id="dlgPatient">
   <form method="dialog" id="formPatient">
     <h3>Nuovo paziente</h3>
-    <label>Nome (es. Cognome Nome)<input name="name" required autofocus></label>
+    <label>Nome o iniziali (es. M.R.)<input name="name" required autofocus autocomplete="off"></label>
+    <div class="hint" id="dupHint" style="margin:-6px 0 12px"></div>
     <label>Etichette (facoltative, es. la sede; più etichette separate da virgola)<input name="labels" list="labelOptions" placeholder="es. Milano" autocomplete="off"><datalist id="labelOptions"></datalist></label>
     <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Crea</button></div>
   </form>
@@ -349,6 +351,24 @@ const savedFilter = () => { try { return localStorage.getItem("fs-label") || "";
 const saveFilter = v => { try { localStorage.setItem("fs-label", v); } catch {} };
 const parseLabels = s => (s || "").split(",").map(x => x.trim()).filter(Boolean);
 
+// same normalization as the server folder name: no trailing dots/spaces, no characters Windows forbids
+const baseName = s => s.replace(/[<>:"/\\|?*\x00-\x1f]/g, "").trim().replace(/^[.\s]+|[.\s]+$/g, "").toLowerCase();
+
+// warns while typing initials that already exist, and shows the name the new patient will get
+function duplicateHint(patients, typed) {
+  const b = baseName(typed), box = $("#dupHint");
+  if (!b) { box.innerHTML = ""; return; }
+  const same = patients.filter(p => p.name.toLowerCase() === b || p.name.toLowerCase().startsWith(b + " ("));
+  if (!same.length) { box.innerHTML = ""; return; }
+  let n = 2; const names = new Set(patients.map(p => p.name.toLowerCase()));
+  while (names.has(`${b} (${n})`)) n++;
+  const shown = typed.trim().replace(/[.\s]+$/, "");
+  box.innerHTML = `<span style="color:var(--warn)">Esiste già: </span>` + same.map(p =>
+      `<a href="#/p/${enc(p.name)}" class="openDup">${esc(p.name)}</a> <span class="muted">(${esc((p.labels || []).join(", ") || "senza etichetta")}, ${p.sessions} sedute)</span>`).join(" · ")
+    + `<br>Se è una persona diversa verrà creato come <b>${esc(shown)} (${n})</b>.`;
+  box.querySelectorAll(".openDup").forEach(a => a.onclick = () => $("#dlgPatient").close("cancel"));
+}
+
 async function renderDashboard() {
   $("#crumb").textContent = "";
   const patients = await api("/api/patients");
@@ -402,6 +422,8 @@ async function renderDashboard() {
     $("#formPatient").reset();
     $("#labelOptions").innerHTML = allLabels.map(l => `<option value="${esc(l)}">`).join("");
     if (filter && filter !== NO_LABEL) $("#formPatient").labels.value = filter;  // new patient in the location being viewed
+    $("#dupHint").innerHTML = "";
+    $("#formPatient").name.oninput = () => duplicateHint(patients, $("#formPatient").name.value);
     $("#dlgPatient").showModal();
   };
   $("#btnTrash").onclick = () => location.hash = "#/cestino";
@@ -877,7 +899,8 @@ function openUpload() {
 // ------------------------------------------------------------ dialogs
 $("#dlgPatient").addEventListener("close", async () => {
   if ($("#dlgPatient").returnValue !== "ok") return;
-  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value, labels: parseLabels($("#formPatient").labels.value) }) });
+  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value, labels: parseLabels($("#formPatient").labels.value), allow_suffix: true }) });
+        if (r.name.toLowerCase() !== baseName($("#formPatient").name.value)) toast("Creato come " + r.name + " (nome già usato)");
         location.hash = "#/p/" + enc(r.name); } catch (e) { alert(e.message); }
 });
 $("#dlgSession").addEventListener("close", async () => {

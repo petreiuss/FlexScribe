@@ -1128,6 +1128,7 @@ app = FastAPI(title="FlexScribe")
 class NewPatient(BaseModel):
     name: str
     labels: list[str] = []
+    allow_suffix: bool = False  # on a name collision create 'NAME (2)' instead of refusing
 
 
 class LabelsUpdate(BaseModel):
@@ -1202,10 +1203,17 @@ def get_patients():
 
 @app.post("/api/patients")
 def create_patient(body: NewPatient):
-    name = safe_name(body.name)
+    """Patients are usually named by initials: on a collision the new one gets a number, 'M.R (2)', 'M.R (3)'…"""
+    base = safe_name(body.name)
+    if base.startswith(("_", ".")):
+        raise HTTPException(400, "Nome non valido")
+    existing = {p.name.lower() for p in ROOT.iterdir() if p.is_dir()}
+    name, n = base, 2
+    while name.lower() in existing:
+        if not body.allow_suffix:
+            raise HTTPException(409, "Esiste già un paziente con questo nome")
+        name, n = f"{base} ({n})", n + 1
     p = inside_root(name)
-    if p.exists():
-        raise HTTPException(409, "Esiste già un paziente con questo nome")
     p.mkdir(parents=True)
     if body.labels:
         save_patient_labels(p, body.labels)
