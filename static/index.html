@@ -74,6 +74,8 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
+  .chip { border-radius: 99px; padding: 4px 12px; font-size: 13px; } .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .grouptitle { font-size: 15px; margin: 18px 0 10px; } .grouptitle:first-child { margin-top: 0; }
   .menu { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 220px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
   .menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; }
   .menu button:hover { background: var(--bg); } .menu button.danger { color: var(--err); } .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
@@ -122,6 +124,7 @@
   <form method="dialog" id="formPatient">
     <h3>Nuovo paziente</h3>
     <label>Nome (es. Cognome Nome)<input name="name" required autofocus></label>
+    <label>Etichette (facoltative, es. la sede; più etichette separate da virgola)<input name="labels" list="labelOptions" placeholder="es. Milano" autocomplete="off"><datalist id="labelOptions"></datalist></label>
     <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Crea</button></div>
   </form>
 </dialog>
@@ -236,18 +239,18 @@ function openMenu(anchor, items) {
 }
 
 // resolves with the entered value, or null if cancelled. type: "text" | "date" | "select" (options: [{value,label}])
-function askValue({ title, label, type = "text", value = "", options = [], hint = "", ok = "Salva" }) {
+function askValue({ title, label, type = "text", value = "", options = [], hint = "", ok = "Salva", allowEmpty = false }) {
   return new Promise(resolve => {
     const dlg = $("#dlgAsk");
     $("#askTitle").textContent = title; $("#askLabel").textContent = label; $("#askHint").textContent = hint;
     $("#askOk").textContent = ok;
     $("#askField").innerHTML = type === "select"
       ? `<select id="askInput">${options.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("")}</select>`
-      : `<input id="askInput" type="${type}" required>`;
+      : `<input id="askInput" type="${type}" ${allowEmpty ? "" : "required"}>`;
     const input = $("#askInput"); input.style.display = "block"; input.style.width = "100%"; input.style.marginTop = "4px";
     if (value) input.value = value;
     dlg.returnValue = "";
-    dlg.onclose = () => resolve(dlg.returnValue === "ok" && input.value.trim() ? input.value.trim() : null);
+    dlg.onclose = () => resolve(dlg.returnValue !== "ok" ? null : input.value.trim() || (allowEmpty ? "" : null));
     dlg.showModal(); input.focus();
   });
 }
@@ -288,8 +291,16 @@ function sessionMenu(patient, s, base) {
   };
 }
 
-function patientMenu(anchor, patient) {
+function patientMenu(anchor, patient, labels = []) {
   openMenu(anchor, [
+    { label: "Etichette…", action: async () => {
+        const known = [...new Set((await api("/api/patients")).flatMap(p => p.labels || []))].sort();
+        const v = await askValue({ title: "Etichette del paziente", label: "Etichette (separate da virgola)", value: labels.join(", "),
+                                   hint: known.length ? "Già usate: " + known.join(", ") : "Ad esempio la sede: Milano, Bergamo…", ok: "Salva", allowEmpty: true });
+        if (v === null) return;
+        try { await api(`/api/patients/${enc(patient)}/etichette`, { method: "PUT", ...jsonBody({ labels: parseLabels(v) }) });
+              toast("Etichette aggiornate"); route(); } catch (e) { alert(e.message); }
+      } },
     { label: "Rinomina paziente…", action: async () => {
         const n = await askValue({ title: "Rinomina paziente", label: "Nome", value: patient });
         if (!n || n === patient) return;
@@ -333,30 +344,66 @@ async function renderTrash() {
 }
 
 // ------------------------------------------------------------ dashboard
+const NO_LABEL = "__none__";
+const savedFilter = () => { try { return localStorage.getItem("fs-label") || ""; } catch { return ""; } };
+const saveFilter = v => { try { localStorage.setItem("fs-label", v); } catch {} };
+const parseLabels = s => (s || "").split(",").map(x => x.trim()).filter(Boolean);
+
 async function renderDashboard() {
   $("#crumb").textContent = "";
   const patients = await api("/api/patients");
+  const allLabels = [...new Set(patients.flatMap(p => p.labels || []))].sort((a, b) => a.localeCompare(b, "it"));
+  const unlabeled = patients.filter(p => !(p.labels || []).length).length;
+  let filter = savedFilter();
+  if (filter && filter !== NO_LABEL && !allLabels.includes(filter)) filter = "";
   app.innerHTML = `
     <div class="toolbar">
       <input type="search" id="q" placeholder="Cerca paziente…">
       <button id="btnTrash" title="Sedute e pazienti eliminati">Cestino</button>
       <button class="primary" id="btnNew">+ Nuovo paziente</button>
     </div>
-    <div class="grid" id="grid"></div>
+    ${allLabels.length ? `<div class="row chips" id="chips" style="margin:-6px 0 16px"></div>` : ""}
+    <div id="groups"></div>
     <p class="muted" style="margin-top:20px">Cartella pazienti: ${esc(config.patients_dir)}</p>`;
-  const draw = () => {
-    const q = $("#q").value.toLowerCase();
-    const list = patients.filter(p => p.name.toLowerCase().includes(q));
-    $("#grid").innerHTML = list.length ? list.map(p => `
+
+  const card = p => `
       <div class="card" data-p="${esc(p.name)}">
         <h3>${esc(p.name)}</h3>
-        <div class="muted">${p.sessions} ${p.sessions === 1 ? "sessione" : "sessioni"}${p.last_date ? " · ultima " + fmtDate(p.last_date) : ""}</div>
-        <div style="margin-top:8px">${p.busy ? `<span class="badge b-busy">${p.busy} in corso</span>` : ""}${p.pending ? `<span class="badge b-pending">${p.pending} da trascrivere</span>` : ""}</div>
-      </div>`).join("") : `<div class="empty" style="grid-column:1/-1">${patients.length ? "Nessun risultato" : "Nessun paziente. Crea il primo con “Nuovo paziente”."}</div>`;
+        <div class="muted">${p.sessions} ${p.sessions === 1 ? "seduta" : "sedute"}${p.last_date ? " · ultima " + fmtDate(p.last_date) : ""}</div>
+        <div style="margin-top:8px">${(p.labels || []).map(l => `<span class="tag">${esc(l)}</span>`).join("")}${p.busy ? `<span class="badge b-busy">${p.busy} in corso</span>` : ""}${p.pending ? `<span class="badge b-pending">${p.pending} da trascrivere</span>` : ""}</div>
+      </div>`;
+
+  const draw = () => {
+    const q = $("#q").value.toLowerCase();
+    const match = p => p.name.toLowerCase().includes(q);
+    if ($("#chips")) {
+      const chip = (v, label, n) => `<button class="chip ${filter === v ? "on" : ""}" data-f="${esc(v)}">${esc(label)} <span class="muted">${n}</span></button>`;
+      $("#chips").innerHTML = chip("", "Tutti", patients.length)
+        + allLabels.map(l => chip(l, l, patients.filter(p => (p.labels || []).includes(l)).length)).join("")
+        + (unlabeled ? chip(NO_LABEL, "Senza etichetta", unlabeled) : "");
+      $("#chips").querySelectorAll(".chip").forEach(b => b.onclick = () => { filter = b.dataset.f; saveFilter(filter); draw(); });
+    }
+    // grouped by label when labels exist and no single label is selected; a patient with 2 labels shows in both
+    let groups;
+    if (!allLabels.length) groups = [["", patients.filter(match)]];
+    else if (filter === NO_LABEL) groups = [["Senza etichetta", patients.filter(p => !(p.labels || []).length && match(p))]];
+    else if (filter) groups = [[filter, patients.filter(p => (p.labels || []).includes(filter) && match(p))]];
+    else groups = allLabels.map(l => [l, patients.filter(p => (p.labels || []).includes(l) && match(p))])
+                   .concat([["Senza etichetta", patients.filter(p => !(p.labels || []).length && match(p))]]);
+    groups = groups.filter(([, list], i) => list.length || groups.length === 1);
+    $("#groups").innerHTML = groups.length && groups.some(([, l]) => l.length) ? groups.map(([title, list]) => `
+      ${title ? `<h3 class="grouptitle">${esc(title)} <span class="muted">${list.length}</span></h3>` : ""}
+      <div class="grid">${list.map(card).join("")}</div>`).join("")
+      : `<div class="empty">${patients.length ? "Nessun risultato" : "Nessun paziente. Crea il primo con “Nuovo paziente”."}</div>`;
     document.querySelectorAll(".card").forEach(c => c.onclick = () => location.hash = "#/p/" + enc(c.dataset.p));
   };
   $("#q").oninput = draw;
-  $("#btnNew").onclick = () => { $("#formPatient").reset(); $("#dlgPatient").showModal(); };
+  $("#btnNew").onclick = () => {
+    $("#formPatient").reset();
+    $("#labelOptions").innerHTML = allLabels.map(l => `<option value="${esc(l)}">`).join("");
+    if (filter && filter !== NO_LABEL) $("#formPatient").labels.value = filter;  // new patient in the location being viewed
+    $("#dlgPatient").showModal();
+  };
   $("#btnTrash").onclick = () => location.hash = "#/cestino";
   draw();
 }
@@ -390,7 +437,8 @@ async function renderPatient(patient, sessionId) {
   document.querySelectorAll("#sessions .item").forEach(i => i.onclick = () => location.hash = `#/p/${enc(patient)}/${enc(i.dataset.s)}`);
   $("#btnUpload").onclick = openUpload;
   $("#btnTrend").onclick = () => location.hash = "#/a/" + enc(patient);
-  $("#btnPatMenu").onclick = e => patientMenu(e.currentTarget, patient);
+  $("#btnPatMenu").onclick = e => patientMenu(e.currentTarget, patient, data.labels || []);
+  $("#crumb").textContent = "/ " + patient + ((data.labels || []).length ? " · " + data.labels.join(", ") : "");
   $("#btnImport").onclick = () => $("#importFiles").click();
   $("#importFiles").onchange = async e => {
     const fd = new FormData(); [...e.target.files].forEach(f => fd.append("files", f));
@@ -829,7 +877,7 @@ function openUpload() {
 // ------------------------------------------------------------ dialogs
 $("#dlgPatient").addEventListener("close", async () => {
   if ($("#dlgPatient").returnValue !== "ok") return;
-  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value }) });
+  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value, labels: parseLabels($("#formPatient").labels.value) }) });
         location.hash = "#/p/" + enc(r.name); } catch (e) { alert(e.message); }
 });
 $("#dlgSession").addEventListener("close", async () => {

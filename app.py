@@ -1127,6 +1127,32 @@ app = FastAPI(title="FlexScribe")
 
 class NewPatient(BaseModel):
     name: str
+    labels: list[str] = []
+
+
+class LabelsUpdate(BaseModel):
+    labels: list[str]
+
+
+def patient_labels(pdir: Path):
+    """Labels of a patient (e.g. the practice location), stored in <patient>/paziente.json."""
+    return (read_json(pdir / "paziente.json", {}) or {}).get("etichette", [])
+
+
+def save_patient_labels(pdir: Path, labels):
+    # reuse the spelling already used by other patients ("bergamo" -> "Bergamo") so one location = one filter
+    known = {lab.lower(): lab for p in ROOT.iterdir() if p.is_dir() and p != pdir for lab in patient_labels(p)}
+    clean, seen = [], set()
+    for lab in labels:
+        lab = re.sub(r"\s+", " ", str(lab)).strip()[:40]
+        lab = known.get(lab.lower(), lab)
+        if lab and lab.lower() not in seen:
+            seen.add(lab.lower())
+            clean.append(lab)
+    data = read_json(pdir / "paziente.json", {}) or {}
+    data["etichette"] = clean
+    write_json(pdir / "paziente.json", data)
+    return clean
 
 
 class TranscriptEdit(BaseModel):
@@ -1169,6 +1195,7 @@ def get_patients():
             "last_date": sessions[0]["date"] if sessions else "",
             "busy": sum(1 for s in sessions if s["status"] in ("queued", "converting", "loading", "transcribing")),
             "pending": sum(1 for s in sessions if s["status"] in ("pending", "error")),
+            "labels": patient_labels(p),
         })
     return out
 
@@ -1180,13 +1207,20 @@ def create_patient(body: NewPatient):
     if p.exists():
         raise HTTPException(409, "Esiste già un paziente con questo nome")
     p.mkdir(parents=True)
+    if body.labels:
+        save_patient_labels(p, body.labels)
     return {"name": name}
+
+
+@app.put("/api/patients/{patient}/etichette")
+def set_patient_labels(patient: str, body: LabelsUpdate):
+    return {"labels": save_patient_labels(patient_dir(patient), body.labels)}
 
 
 @app.get("/api/patients/{patient}")
 def get_patient(patient: str):
     pdir = patient_dir(patient)
-    return {"name": pdir.name, "sessions": list_sessions(pdir)}
+    return {"name": pdir.name, "sessions": list_sessions(pdir), "labels": patient_labels(pdir)}
 
 
 @app.post("/api/patients/{patient}/sessions")
