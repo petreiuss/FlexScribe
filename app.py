@@ -1115,25 +1115,27 @@ def run_job(job: dict):
     job["status"] = "converting"
     wav = convert_audio(sdir, src)
 
+    speakers = int(job.get("speakers") or CFG["default_speakers"])
+    job["speakers_wanted"] = speakers >= 2 and (DIAR_DIR / "embedding.onnx").exists()
     job["status"] = "transcribing"
     if model.startswith("ov:"):
-        transcribe_openvino(job, sdir, wav, model)
+        transcribe_openvino(job, sdir, wav, model)  # also fingerprints the voices, block by block
     else:
         transcribe_whispercpp(job, sdir, wav, model)
 
-    meta = read_json(sdir / "meta.json", {}) or {}
-    meta.update({"model": model, "transcribed_at": time.strftime("%Y-%m-%d %H:%M"),
-                 "duration_s": round(time.time() - job["run_started"])})
-    write_json(sdir / "meta.json", meta)
-    speakers = int(job.get("speakers") or CFG["default_speakers"])
     if speakers >= 2:
         job["status"] = "speakers"
         try:
-            diarize_session(sdir, wav, speakers)
+            diarize_session(sdir, wav, speakers, job.pop("_fingerprints", None))
         except Exception as e:  # noqa: BLE001 - keep the plain transcript if speaker recognition fails
             meta = read_json(sdir / "meta.json", {}) or {}
             meta["speakers_error"] = str(e)
             write_json(sdir / "meta.json", meta)
+    job.pop("_fingerprints", None)
+    meta = read_json(sdir / "meta.json", {}) or {}
+    meta.update({"model": model, "transcribed_at": time.strftime("%Y-%m-%d %H:%M"),
+                 "duration_s": round(time.time() - job["run_started"])})
+    write_json(sdir / "meta.json", meta)
     wav.unlink(missing_ok=True)
     job["status"] = "done"
     job["progress"] = 100
@@ -1161,21 +1163,59 @@ def convert_audio(sdir: Path, src: Path):
 # into N speakers. Faster and more reliable here than a full diarization pipeline, which mixes voices in 10 s windows.
 
 DIAR_DIR = MODELS_DIR / "diarization"
-_EMBEDDER = None
+EMB_WORKERS, EMB_THREADS = 4, 2  # 4 extractors in parallel, 2 threads each (measured fastest on a 14-core laptop)
+EMB_MAX_S = 5.0                  # a voice is recognized from a few seconds: longer phrases are cut to their middle 5 s
+_EMB_LOCAL = threading.local()
 THERAPIST_HINTS = re.compile(r"\?|\b(proviamo|prova a|prossima settimana|per la prossima|esercizio|compito|come ti senti|"
                              r"cosa hai|com'è andat|ti ricordi|ricordi|notare|ci vediamo)\b", re.IGNORECASE)
 
 
 def speaker_embedder():
-    global _EMBEDDER
-    if _EMBEDDER is None:
+    """One extractor per worker thread (they are not shared between threads)."""
+    if not hasattr(_EMB_LOCAL, "ext"):
         import sherpa_onnx
         model = DIAR_DIR / "embedding.onnx"
         if not model.exists():
             raise RuntimeError("Modello per riconoscere chi parla mancante: riavvia avvia.bat per scaricarlo")
-        _EMBEDDER = sherpa_onnx.SpeakerEmbeddingExtractor(sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=str(model), num_threads=max(1, min(8, (os.cpu_count() or 4) - 1))))
-    return _EMBEDDER
+        _EMB_LOCAL.ext = sherpa_onnx.SpeakerEmbeddingExtractor(sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+            model=str(model), num_threads=EMB_THREADS))
+    return _EMB_LOCAL.ext
+
+
+class VoiceFingerprints:
+    """Voice embeddings of transcript segments, computed in background threads. During an OpenVINO transcription
+    each 2-minute block is fingerprinted on the CPU while the GPU transcribes the next one, so speaker recognition
+    adds almost no time."""
+
+    def __init__(self, audio):
+        from concurrent.futures import ThreadPoolExecutor
+        self.audio = audio
+        self.pool = ThreadPoolExecutor(EMB_WORKERS)
+        self.futures = {}
+
+    def add(self, i, from_ms, to_ms):
+        a, b = int(from_ms * 16), int(to_ms * 16)  # ms -> samples at 16 kHz
+        if b - a < 16000 * 0.8:
+            return  # too short for a reliable fingerprint: takes the speaker of its neighbour
+        if b - a > 16000 * EMB_MAX_S:
+            mid, half = (a + b) // 2, int(16000 * EMB_MAX_S / 2)
+            a, b = mid - half, mid + half
+        self.futures[i] = (self.pool.submit(self._embed, a, b), (int(to_ms) - int(from_ms)) / 1000)
+
+    def _embed(self, a, b):
+        import numpy as np
+        ext = speaker_embedder()
+        st = ext.create_stream()
+        st.accept_waveform(16000, self.audio[a:b])
+        st.input_finished()
+        v = np.array(ext.compute(st))
+        return v / (np.linalg.norm(v) or 1)
+
+    def results(self):
+        """{segment index: (unit vector, duration in s)}, waiting for the work still running."""
+        out = {i: (f.result(), w) for i, (f, w) in self.futures.items()}
+        self.pool.shutdown()
+        return out
 
 
 def cluster_voices(X, weights, k):
@@ -1192,29 +1232,25 @@ def cluster_voices(X, weights, k):
     return labels
 
 
-def diarize_session(sdir: Path, wav: Path, k: int):
-    """Label every transcript segment with a speaker; name them (therapist = most questions/prompts); rewrite the text."""
+def diarize_session(sdir: Path, wav: Path, k: int, fingerprints: "VoiceFingerprints | None" = None):
+    """Label every transcript segment with a speaker; name them (therapist = most questions/prompts); rewrite the text.
+    `fingerprints` may already hold the embeddings computed during the transcription."""
     import wave
     import numpy as np
     data = read_json(sdir / "transcript.json", {}) or {}
     segs = data.get("transcription", [])
     if len(segs) < k:
         return
-    with wave.open(str(wav)) as w:
-        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-    ext = speaker_embedder()
-    vecs, weights, idx = [], [], []
-    for i, s in enumerate(segs):
-        a, b = int(s["offsets"]["from"] * 16), int(s["offsets"]["to"] * 16)  # ms -> samples at 16 kHz
-        if b - a < 16000 * 0.8:  # too short for a reliable voice fingerprint: decided by its neighbours below
-            continue
-        st = ext.create_stream()
-        st.accept_waveform(16000, audio[a:b])
-        st.input_finished()
-        v = np.array(ext.compute(st))
-        vecs.append(v / (np.linalg.norm(v) or 1))
-        weights.append((b - a) / 16000)
-        idx.append(i)
+    if fingerprints is None:
+        with wave.open(str(wav)) as w:
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        fingerprints = VoiceFingerprints(audio)
+        for i, s in enumerate(segs):
+            fingerprints.add(i, s["offsets"]["from"], s["offsets"]["to"])
+    found = fingerprints.results()
+    idx = sorted(found)
+    vecs = [found[i][0] for i in idx]
+    weights = [found[i][1] for i in idx]
     if len(vecs) < k:
         return
     labels = cluster_voices(np.array(vecs), np.array(weights), k)
@@ -1361,6 +1397,9 @@ def transcribe_openvino(job: dict, sdir: Path, wav: Path, model: str):
         audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
     cuts = quiet_cuts(audio)
     segments, texts = [], []
+    # speaker recognition runs on the CPU while the GPU transcribes the next block
+    fingerprints = VoiceFingerprints(audio) if job.get("speakers_wanted") else None
+    job["_fingerprints"] = fingerprints
     for i in range(len(cuts) - 1):
         a, b = cuts[i], cuts[i + 1]
         res = pipe.generate(audio[a:b].tolist(), language=f"<|{CFG['language']}|>", task="transcribe",
@@ -1371,6 +1410,8 @@ def transcribe_openvino(job: dict, sdir: Path, wav: Path, model: str):
             if t:
                 segments.append({"offsets": {"from": int((off + ch.start_ts) * 1000),
                                              "to": int((off + max(ch.end_ts, ch.start_ts)) * 1000)}, "text": " " + t})
+                if fingerprints:
+                    fingerprints.add(len(segments) - 1, segments[-1]["offsets"]["from"], segments[-1]["offsets"]["to"])
         texts.append(res.texts[0].strip())
         job["progress"] = int(100 * b / len(audio))
     # same files the whisper.cpp engine writes, so the UI works unchanged
@@ -2095,7 +2136,7 @@ def open_folder(patient: str, session: str):
 
 @app.get("/api/jobs")
 def get_jobs():
-    return [{k: v for k, v in j.items() if k != "partial"} for j in JOBS.values()
+    return [{k: v for k, v in j.items() if k != "partial" and not k.startswith("_")} for j in JOBS.values()
             if j["status"] != "done" or time.time() - j["started"] < 3600]
 
 
