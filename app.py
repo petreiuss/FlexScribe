@@ -738,7 +738,7 @@ def run_summary(job: dict):
 
 # Process models; each patient uses one or both (paziente.json "modelli"). Score 1 = rigid, 5 = flexible, 0 = no evidence.
 MODELS = {
-    "hexaflex": {"label": "Hexaflex (ACT)", "radar": ["accettazione", "defusione", "presente", "se_contesto", "valori", "azione"],
+    "hexaflex": {"label": "Hexaflex (ACT)", "scale": "flex", "radar": ["accettazione", "defusione", "presente", "se_contesto", "valori", "azione"],
                  "processes": [
         ("accettazione", "Accettazione", "disponibilità a sentire emozioni e sensazioni difficili (1 = evitamento esperienziale marcato)"),
         ("defusione", "Defusione", "capacità di vedere i pensieri come pensieri (1 = fusione, pensieri presi alla lettera)"),
@@ -748,7 +748,7 @@ MODELS = {
         ("azione", "Azione impegnata", "comportamenti coerenti con i valori (1 = inazione, evitamento, impulsività)"),
         ("autocompassione", "Autocompassione", "atteggiamento verso di sé nelle difficoltà (1 = autocritica dura)")]},
     # DNA-v (Hayes & Ciarrochi): ACT for young people
-    "dnav": {"label": "DNA-v", "radar": ["d_discoverer", "d_noticer", "d_advisor", "d_valori", "d_self", "d_social"],
+    "dnav": {"label": "DNA-v", "scale": "flex", "radar": ["d_discoverer", "d_noticer", "d_advisor", "d_valori", "d_self", "d_social"],
              "processes": [
         ("d_discoverer", "Esploratore", "(Discoverer) esplorare, provare comportamenti nuovi e imparare da come vanno "
                                        "(1 = evita il nuovo o ripete strategie che non funzionano)"),
@@ -759,9 +759,31 @@ MODELS = {
         ("d_valori", "Valori / vitalità", "(values) contatto con ciò che conta e dà vitalità (1 = assente, scelte guidate solo dall'evitamento)"),
         ("d_self", "Visione di sé", "(self view) visione di sé flessibile (1 = etichette rigide su di sé, es. 'sono stupido')"),
         ("d_social", "Visione sociale", "(social view) connessione con gli altri, comprensione della loro prospettiva, appartenenza (1 = isolamento o ostilità)")]},
+    # Autism (DSM-5 criteria, paraphrased): intensity of indicators that emerge in the session, NOT a diagnosis.
+    # Stored 0 = not discussed, 1..4 = intensity 0..3 (absent, mild, moderate, marked) - the UI shows 0..3.
+    "asd": {"label": "Autismo (DSM-5)", "scale": "intensity",
+            "radar": ["a_reciprocita", "a_nonverbale", "a_relazioni", "a_ripetitivi", "a_routine", "a_interessi",
+                      "a_sensoriale", "a_impatto"],
+            "processes": [
+        ("a_reciprocita", "Reciprocità socio-emotiva", "(criterio A1) difficoltà nello scambio sociale ed emotivo: avviare o "
+                          "rispondere alle interazioni, condividere interessi ed emozioni, conversazione reciproca"),
+        ("a_nonverbale", "Comunicazione non verbale", "(criterio A2) difficoltà con contatto visivo, gesti, espressioni del volto, "
+                         "tono, e nel capirli negli altri"),
+        ("a_relazioni", "Relazioni", "(criterio A3) difficoltà a sviluppare, mantenere e capire le relazioni, adattare il "
+                        "comportamento ai contesti sociali, fare amicizia"),
+        ("a_ripetitivi", "Comportamenti ripetitivi", "(criterio B1) movimenti, uso di oggetti o linguaggio stereotipati o "
+                         "ripetitivi (es. ecolalia, frasi idiosincratiche)"),
+        ("a_routine", "Routine e prevedibilità", "(criterio B2) insistenza sulla stessa routine, disagio marcato per piccoli "
+                      "cambiamenti, rituali, pensiero rigido"),
+        ("a_interessi", "Interessi ristretti", "(criterio B3) interessi molto intensi o focalizzati, insoliti per intensità o oggetto"),
+        ("a_sensoriale", "Sensorialità", "(criterio B4) iper o iporeattività a suoni, luci, consistenze, odori, dolore, "
+                         "o ricerca sensoriale insolita"),
+        ("a_impatto", "Impatto sul funzionamento", "(criterio D) quanto queste caratteristiche pesano su scuola, lavoro, "
+                      "relazioni e vita quotidiana, incluso lo sforzo di mascherarle (camouflaging)")]},
 }
 DEFAULT_MODELS = ["hexaflex"]
 PROCESS_INFO = {k: (label, desc) for m in MODELS.values() for k, label, desc in m["processes"]}
+PROCESS_MODEL = {k: mid for mid, m in MODELS.items() for k, _, _ in m["processes"]}
 PROCESSES = [(k, v[0]) for k, v in PROCESS_INFO.items()]  # every known process, for validation
 HEXAFLEX = MODELS["hexaflex"]["radar"]
 
@@ -797,11 +819,15 @@ def vocabulary_prompt():
             + "\n".join(lines))
 
 PROCESS_PROMPT_HEAD = """COMPITO DIVERSO: invece della sintesi, compila una SCHEDA DEI PROCESSI di questa seduta in JSON.
-
-Per ciascun processo assegna un punteggio sulla base di ciò che il paziente porta IN QUESTA SEDUTA:
-1 = forte rigidità (polo inflessibile), 2 = rigidità prevalente, 3 = misto, 4 = flessibilità prevalente, 5 = forte flessibilità.
-0 = nessuna evidenza nella trascrizione (usalo quando il processo non emerge: non indovinare).
+Per ciascuna voce assegna un punteggio sulla base di ciò che emerge IN QUESTA SEDUTA, con la scala indicata per il suo modello.
 """
+SCALE_TEXT = {
+    "flex": ("Scala: 1 = forte rigidità (polo inflessibile), 2 = rigidità prevalente, 3 = misto, 4 = flessibilità prevalente, "
+             "5 = forte flessibilità; 0 = nessuna evidenza nella trascrizione (usalo quando il processo non emerge: non indovinare)."),
+    "intensity": ("Scala di INTENSITÀ degli indicatori riferiti o osservati in seduta (non è una diagnosi): 0 = l'argomento "
+                  "non emerge, 1 = emerge ed è assente, 2 = lieve o occasionale, 3 = moderato, 4 = marcato o pervasivo. Basati solo "
+                  "su comportamenti e vissuti descritti; usa un linguaggio descrittivo e non patologizzante."),
+}
 PROCESS_PROMPT_TAIL = """Per ogni processo scrivi in "evidenza" un esempio telegrafico dalla trascrizione (massimo 12 parole), o "" se il punteggio è 0.
 Compila anche, in modo telegrafico: temi (max 4, 1-3 parole ciascuno), valori_emersi (1-4 parole ciascuno),
 azioni_concordate per la prossima volta (max 8 parole ciascuna), compiti_precedenti (esito dei compiti della seduta
@@ -814,18 +840,21 @@ Rispondi solo con il JSON."""
 
 
 def process_prompt(models):
-    names = " e ".join(MODELS[m]["label"] for m in models)
-    lines = [f"- {k}: {desc}" for k, _, desc in model_processes(models)]
-    return PROCESS_PROMPT_HEAD + f"Modello: {names}.\n" + "\n".join(lines) + "\n" + PROCESS_PROMPT_TAIL
+    blocks = []
+    for m in models:
+        lines = "\n".join(f"- {k}: {desc}" for k, _, desc in MODELS[m]["processes"])
+        blocks.append(f"MODELLO {MODELS[m]['label']}. {SCALE_TEXT[MODELS[m]['scale']]}\n{lines}")
+    return PROCESS_PROMPT_HEAD + "\n" + "\n\n".join(blocks) + "\n\n" + PROCESS_PROMPT_TAIL
 
 
 def process_schema(models):
     keys = [k for k, _, _ in model_processes(models)]
+    top = {k: 4 if MODELS[m]["scale"] == "intensity" else 5 for m in models for k, _, _ in MODELS[m]["processes"]}
     return {
         "type": "object",
         "properties": {
             "processi": {"type": "object", "properties": {
-                k: {"type": "object", "properties": {"punteggio": {"type": "integer", "enum": [0, 1, 2, 3, 4, 5]},
+                k: {"type": "object", "properties": {"punteggio": {"type": "integer", "enum": list(range(top[k] + 1))},
                                                      "evidenza": {"type": "string"}},
                     "required": ["punteggio", "evidenza"]} for k in keys},
                 "required": keys},
@@ -930,7 +959,7 @@ def effective_card(sdir: Path):
         proposed = p.get("punteggio") if isinstance(p.get("punteggio"), int) else 0
         value = conf[k] if k in conf else proposed
         procs[k] = {"label": label, "score": value or None, "proposed": proposed or None, "confirmed": k in conf,
-                    "evidence": p.get("evidenza", ""), "model": next(m for m in models if k in dict((x[0], 1) for x in MODELS[m]["processes"]))}
+                    "evidence": p.get("evidenza", ""), "model": PROCESS_MODEL[k], "scale": MODELS[PROCESS_MODEL[k]]["scale"]}
     return {"processi": procs, "temi": prop.get("temi", []), "valori": prop.get("valori_emersi", []),
             "azioni": prop.get("azioni_concordate", []), "compiti": prop.get("compiti_precedenti", {}),
             "interventi": prop.get("interventi"),  # None on cards made before the graph existed
@@ -1474,7 +1503,8 @@ def get_trend(patient: str):
     models = patient_models(pdir)
     return {"patient": pdir.name,
             "processes": [{"key": k, "label": l, "model": m} for m in models for k, l, _ in MODELS[m]["processes"]],
-            "models": [{"id": m, "label": MODELS[m]["label"], "radar": MODELS[m]["radar"]} for m in models],
+            "models": [{"id": m, "label": MODELS[m]["label"], "radar": MODELS[m]["radar"], "scale": MODELS[m]["scale"]}
+                       for m in models],
             "hexaflex": HEXAFLEX, "sessions": out}
 
 

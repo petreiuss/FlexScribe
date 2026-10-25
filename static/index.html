@@ -100,6 +100,9 @@
   .sc-low { background: var(--warn-soft) !important; color: var(--warn) !important; border-color: var(--warn) !important; }
   .sc-mid { background: var(--bg) !important; } .sc-high { background: var(--accent-soft) !important; color: var(--accent) !important; border-color: var(--accent) !important; }
   .sc-na { color: var(--muted); }
+  .sc-i0 { background: var(--bg) !important; } .sc-i1 { background: #ece9fb !important; color: #4a3fb0 !important; }
+  .sc-i2 { background: #d6d0f6 !important; color: #3c3389 !important; } .sc-i3 { background: #b4aaee !important; color: #26215c !important; }
+  @media (prefers-color-scheme: dark) { .sc-i1 { background: #2b2747 !important; color: #b9b2f2 !important; } .sc-i2 { background: #3a3366 !important; color: #cdc8f7 !important; } .sc-i3 { background: #4d4489 !important; color: #e6e3fc !important; } }
   .procmeta { margin-top: 16px; display: grid; gap: 8px; font-size: 14px; } .procmeta ul { margin: 4px 0 0; padding-left: 20px; }
   .tag { display: inline-block; background: var(--bg); border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; margin: 2px 4px 2px 0; font-size: 12px; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -131,7 +134,8 @@
     <h3>Nuovo paziente</h3>
     <label>Nome o iniziali (es. M.R.)<input name="name" required autofocus autocomplete="off"></label>
     <div class="hint" id="dupHint" style="margin:-6px 0 12px"></div>
-    <label>Modello dei processi<select name="models"><option value="hexaflex">Hexaflex (ACT)</option><option value="dnav">DNA-v (giovani)</option><option value="hexaflex,dnav">Entrambi</option></select></label>
+    <label>Modelli dei processi</label>
+    <div id="newModels" style="margin:-8px 0 12px;font-size:14px"></div>
     <label>Etichette (facoltative, es. la sede; più etichette separate da virgola)<input name="labels" list="labelOptions" placeholder="es. Milano" autocomplete="off"><datalist id="labelOptions"></datalist></label>
     <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok">Crea</button></div>
   </form>
@@ -252,13 +256,16 @@ function askValue({ title, label, type = "text", value = "", options = [], hint 
     const dlg = $("#dlgAsk");
     $("#askTitle").textContent = title; $("#askLabel").textContent = label; $("#askHint").textContent = hint;
     $("#askOk").textContent = ok;
-    $("#askField").innerHTML = type === "select"
+    $("#askField").innerHTML = type === "checks"
+      ? `<div id="askInput" style="margin-top:6px">${options.map(o => `<label class="chk" style="display:flex;margin:4px 0;color:var(--text)"><input type="checkbox" value="${esc(o.value)}" ${(value || []).includes(o.value) ? "checked" : ""}> ${esc(o.label)}</label>`).join("")}</div>`
+      : type === "select"
       ? `<select id="askInput">${options.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("")}</select>`
       : `<input id="askInput" type="${type}" ${allowEmpty ? "" : "required"}>`;
-    const input = $("#askInput"); input.style.display = "block"; input.style.width = "100%"; input.style.marginTop = "4px";
-    if (value) input.value = value;
+    const input = $("#askInput"); if (type !== "checks") { input.style.display = "block"; input.style.width = "100%"; input.style.marginTop = "4px"; }
+    if (value && type !== "checks") input.value = value;
+    const read = () => type === "checks" ? [...input.querySelectorAll("input:checked")].map(i => i.value).join(",") : input.value.trim();
     dlg.returnValue = "";
-    dlg.onclose = () => resolve(dlg.returnValue !== "ok" ? null : input.value.trim() || (allowEmpty ? "" : null));
+    dlg.onclose = () => resolve(dlg.returnValue !== "ok" ? null : read() || (allowEmpty ? "" : null));
     dlg.showModal(); input.focus();
   });
 }
@@ -302,8 +309,8 @@ function sessionMenu(patient, s, base) {
 function patientMenu(anchor, patient, labels = [], models = ["hexaflex"]) {
   openMenu(anchor, [
     { label: "Modello dei processi…", action: async () => {
-        const v = await askValue({ title: "Modello dei processi", label: "Scheda dei processi e andamento per questo paziente", type: "select",
-                                   options: MODEL_CHOICES, value: models.join(","), ok: "Salva",
+        const v = await askValue({ title: "Modelli dei processi", label: "Scheda dei processi e andamento per questo paziente", type: "checks",
+                                   options: MODEL_CHOICES, value: models, ok: "Salva",
                                    hint: "Le schede già create restano; per aggiungere un modello alle sedute passate usa “Analizza sedute mancanti” in Andamento." });
         if (!v || v === models.join(",")) return;
         try { await api(`/api/patients/${enc(patient)}/modelli`, { method: "PUT", ...jsonBody({ models: v.split(",") }) });
@@ -617,7 +624,7 @@ async function renderDashboard() {
       <div class="card" data-p="${esc(p.name)}">
         <h3>${esc(p.name)}</h3>
         <div class="muted">${p.sessions} ${p.sessions === 1 ? "seduta" : "sedute"}${p.last_date ? " · ultima " + fmtDate(p.last_date) : ""}</div>
-        <div style="margin-top:8px">${(p.labels || []).map(l => `<span class="tag">${esc(l)}</span>`).join("")}${(p.models || []).includes("dnav") ? `<span class="tag" title="Modello dei processi">DNA-v</span>` : ""}${p.busy ? `<span class="badge b-busy">${p.busy} in corso</span>` : ""}${p.pending ? `<span class="badge b-pending">${p.pending} da trascrivere</span>` : ""}</div>
+        <div style="margin-top:8px">${(p.labels || []).map(l => `<span class="tag">${esc(l)}</span>`).join("")}${(p.models || []).filter(m => m !== "hexaflex").map(m => `<span class="tag" title="Modello dei processi">${esc(MODEL_LABELS[m] || m)}</span>`).join("")}${p.busy ? `<span class="badge b-busy">${p.busy} in corso</span>` : ""}${p.pending ? `<span class="badge b-pending">${p.pending} da trascrivere</span>` : ""}</div>
       </div>`;
 
   const draw = () => {
@@ -647,6 +654,7 @@ async function renderDashboard() {
   $("#q").oninput = draw;
   $("#btnNew").onclick = () => {
     $("#formPatient").reset();
+    $("#newModels").innerHTML = modelChecks(["hexaflex"]);
     $("#labelOptions").innerHTML = allLabels.map(l => `<option value="${esc(l)}">`).join("");
     if (filter && filter !== NO_LABEL) $("#formPatient").labels.value = filter;  // new patient in the location being viewed
     $("#dupHint").innerHTML = "";
@@ -906,8 +914,12 @@ function openSummaryDialog(skillId, instructions) {
 }
 
 // ------------------------------------------------------------ process card (hexaflex) per session
-const MODEL_LABELS = { hexaflex: "Hexaflex (ACT)", dnav: "DNA-v" };
-const MODEL_CHOICES = [{ value: "hexaflex", label: "Hexaflex (ACT)" }, { value: "dnav", label: "DNA-v (giovani)" }, { value: "hexaflex,dnav", label: "Entrambi" }];
+const MODEL_LABELS = { hexaflex: "Hexaflex (ACT)", dnav: "DNA-v", asd: "Autismo (DSM-5)" };
+const MODEL_CHOICES = [{ value: "hexaflex", label: "Hexaflex (ACT)" }, { value: "dnav", label: "DNA-v (giovani)" },
+                       { value: "asd", label: "Autismo (DSM-5): intensità degli indicatori, non diagnosi" }];
+const modelChecks = (selected = ["hexaflex"]) => MODEL_CHOICES.map(o => `<label class="chk" style="display:flex;margin:4px 0;color:var(--text)"><input type="checkbox" value="${o.value}" ${selected.includes(o.value) ? "checked" : ""}> ${esc(o.label)}</label>`).join("");
+// value to show for a process score: flexibility 1-5 as is; intensity stored 1-4 shown as 0-3; null = not discussed
+const disp = c => c?.score == null ? null : c.scale === "intensity" ? c.score - 1 : c.score;
 const PROC_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"];
 const PROC_STATUS = { queued: "In coda…", loading: "Avvio di Gemma…", reading: "Lettura della trascrizione", writing: "Compilazione della scheda…" };
 const ESITO = { "svolti": "svolti", "parziali": "parzialmente svolti", "non svolti": "non svolti", "non discussi": "non discussi" };
@@ -933,8 +945,9 @@ function drawProcess(body) {
       ${card.incomplete ? `<p class="hint" style="color:var(--warn)">Questa scheda non contiene ancora tutti i modelli scelti per il paziente: usa “Rianalizza”.</p>` : ""}
       <table class="proc"><tbody>${Object.entries(card.processi).map(([k, p], i, all) => `
         ${card.models?.length > 1 && (i === 0 || all[i - 1][1].model !== p.model) ? `<tr><td colspan="3" style="font-weight:600;color:var(--accent);padding-top:14px">${esc(MODEL_LABELS[p.model] || p.model)}</td></tr>` : ""}
+        ${p.scale === "intensity" && (i === 0 || all[i - 1][1].model !== p.model) ? `<tr><td colspan="3" class="hint" style="padding-top:2px">Intensità degli indicatori emersi in seduta, secondo i criteri DSM-5: 0 = assente, 1 = lieve, 2 = moderato, 3 = marcato, – = non emerso. È un supporto all'osservazione, non una diagnosi.</td></tr>` : ""}
         <tr><td class="pl">${esc(p.label)}<div class="hint">${p.confirmed ? "confermato" : "proposto da Gemma"}</div></td>
-          <td class="sc">${[0,1,2,3,4,5].map(v => `<button class="scb ${(p.score || 0) === v ? "on " + scoreClass(v) + (p.confirmed ? " conf" : "") : ""}" data-k="${k}" data-v="${v}" title="${v ? v : "nessuna evidenza"}">${v || "–"}</button>`).join("")}</td>
+          <td class="sc">${(p.scale === "intensity" ? [0,1,2,3,4] : [0,1,2,3,4,5]).map(v => `<button class="scb ${(p.score || 0) === v ? "on " + (p.scale === "intensity" ? "sc-i" + (v - 1) : scoreClass(v)) + (p.confirmed ? " conf" : "") : ""}" data-k="${k}" data-v="${v}" title="${!v ? "non emerso in seduta" : p.scale === "intensity" ? ["assente", "lieve", "moderato", "marcato"][v - 1] : v}">${!v ? "–" : p.scale === "intensity" ? v - 1 : v}</button>`).join("")}</td>
           <td class="ev">${esc(p.evidence || "")}</td></tr>`).join("")}</tbody></table>
       <div class="row" style="margin-top:12px">
         ${card.all_confirmed ? `<span class="muted">Tutti i punteggi confermati ✓</span>` : `<button class="primary" id="btnProcConfirm">Conferma tutti i proposti</button>`}
@@ -984,37 +997,38 @@ async function pollProcess() {
 // ------------------------------------------------------------ patient trend (andamento)
 let trendTimer = null;
 const fmtShort = d => d ? new Date(d + "T00:00").toLocaleDateString("it-IT", { day: "2-digit", month: "short" }) : "?";
-const mean = a => { const v = a.filter(x => x); return v.length ? v.reduce((p, c) => p + c, 0) / v.length : null; };
+const mean = a => { const v = a.filter(x => x != null); return v.length ? v.reduce((p, c) => p + c, 0) / v.length : null; };
 
-function radarSVG(labels, series) {  // series: [{values:[...], color, dash, label}]
+function radarSVG(labels, series, max = 5) {  // series: [{values:[...], color, dash, label}]
   const W = 480, H = 330, cx = W / 2, cy = 165, R = 112, n = labels.length;
-  const pt = (i, v) => { const a = -Math.PI / 2 + 2 * Math.PI * i / n; return [cx + Math.cos(a) * R * v / 5, cy + Math.sin(a) * R * v / 5]; };
+  const pt = (i, v) => { const a = -Math.PI / 2 + 2 * Math.PI * i / n; return [cx + Math.cos(a) * R * v / max, cy + Math.sin(a) * R * v / max]; };
   let g = "";
-  for (let l = 1; l <= 5; l++) g += `<polygon points="${labels.map((_, i) => pt(i, l).join(",")).join(" ")}" fill="none" stroke="var(--line)" stroke-width="1"/>`;
+  for (let l = 1; l <= max; l++) g += `<polygon points="${labels.map((_, i) => pt(i, l).join(",")).join(" ")}" fill="none" stroke="var(--line)" stroke-width="1"/>`;
   labels.forEach((lab, i) => {
-    const [x, y] = pt(i, 5), [tx, ty] = pt(i, 6.15);
+    const [x, y] = pt(i, max), [tx, ty] = pt(i, max * 1.23);
     g += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="var(--line)"/>`;
     g += `<text x="${tx}" y="${ty + 4}" text-anchor="${Math.abs(tx - cx) < 10 ? "middle" : tx > cx ? "start" : "end"}" font-size="11" fill="var(--muted)">${esc(lab)}</text>`;
   });
   series.forEach(s => {
     const pts = s.values.map((v, i) => pt(i, v || 0));
     g += `<polygon points="${pts.map(p => p.join(",")).join(" ")}" fill="${s.color}" fill-opacity="${s.dash ? 0.04 : 0.13}" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ""}/>`;
-    pts.forEach((p, i) => { if (s.values[i]) g += `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="${s.color}"><title>${esc(labels[i])}: ${s.values[i]}</title></circle>`; });
+    pts.forEach((p, i) => { if (s.values[i] != null) g += `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="${s.color}"><title>${esc(labels[i])}: ${s.values[i]}</title></circle>`; });
   });
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:480px" role="img" aria-label="Hexaflex">${g}</svg>`;
 }
 
-function linesSVG(sessions, procs, shown) {
+function linesSVG(sessions, procs, shown, scale = "flex") {
+  const lo = scale === "intensity" ? 0 : 1, hi = scale === "intensity" ? 3 : 5;
   const W = 560, H = 260, L = 30, Rt = 26, T = 12, B = 34, n = sessions.length;
-  const x = i => n === 1 ? (L + W - Rt) / 2 : L + (W - L - Rt) * i / (n - 1), y = v => T + (H - T - B) * (5 - v) / 4;
+  const x = i => n === 1 ? (L + W - Rt) / 2 : L + (W - L - Rt) * i / (n - 1), y = v => T + (H - T - B) * (hi - v) / (hi - lo);
   let g = "";
-  for (let v = 1; v <= 5; v++) g += `<line x1="${L}" x2="${W - Rt}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 8}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${v}</text>`;
+  for (let v = lo; v <= hi; v++) g += `<line x1="${L}" x2="${W - Rt}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 8}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${v}</text>`;
   const step = Math.ceil(n / 10);
   sessions.forEach((s, i) => { if (i % step === 0 || i === n - 1) g += `<text x="${x(i)}" y="${H - 12}" font-size="11" text-anchor="middle" fill="var(--muted)">${esc(fmtShort(s.date))}</text>`; });
   procs.forEach((p, pi) => {
     if (!shown.has(p.key)) return;
     const off = ((pi % 7) - 3) * 0.06;  // small vertical offset so lines with equal scores do not hide each other
-    const pts = sessions.map((s, i) => [i, s.card?.processi[p.key]?.score]).filter(([, v]) => v);
+    const pts = sessions.map((s, i) => [i, disp(s.card?.processi[p.key])]).filter(([, v]) => v != null);
     const col = PROC_COLORS[pi % PROC_COLORS.length];
     if (pts.length > 1) g += `<polyline points="${pts.map(([i, v]) => `${x(i)},${y(v + off)}`).join(" ")}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
     pts.forEach(([i, v]) => { const conf = sessions[i].card.processi[p.key].confirmed;
@@ -1035,7 +1049,7 @@ async function renderTrend(patient, keepState) {
   if (!st.a && withCard.length) st.a = withCard[0].id;
   if (!st.b && withCard.length) st.b = withCard[withCard.length - 1].id;
   const labelOf = k => d.processes.find(p => p.key === k)?.label || k;
-  const flex = (s, m) => mean(m.radar.map(k => s.card?.processi[k]?.score));
+  const flex = (s, m) => mean(m.radar.map(k => disp(s.card?.processi[k])));
   const first = withCard[0], last = withCard[withCard.length - 1];
   const hw = withCard.map(s => s.card.compiti?.esito).filter(e => e && e !== "non discussi");
   const fmt1 = v => v == null ? "–" : v.toFixed(1).replace(".", ",");
@@ -1050,7 +1064,7 @@ async function renderTrend(patient, keepState) {
     </div>
     <div class="kpis">
       <div class="kpi"><div class="muted">Sedute analizzate</div><div class="kv">${withCard.length} di ${d.sessions.filter(s => s.analyzable).length}</div></div>
-      ${d.models.map(m => `<div class="kpi"><div class="muted">Flessibilità media (${esc(m.label)})</div><div class="kv">${withCard.length > 1 ? fmt1(flex(first, m)) + " → " + fmt1(flex(last, m)) : fmt1(last && flex(last, m))}</div></div>`).join("")}
+      ${d.models.map(m => `<div class="kpi"><div class="muted">${m.scale === "intensity" ? "Intensità media (0–3)" : "Flessibilità media"} (${esc(m.label)})</div><div class="kv">${withCard.length > 1 ? fmt1(flex(first, m)) + " → " + fmt1(flex(last, m)) : fmt1(last && flex(last, m))}</div></div>`).join("")}
       <div class="kpi"><div class="muted">Compiti svolti (anche in parte)</div><div class="kv">${hw.length ? hw.filter(e => e !== "non svolti").length + " / " + hw.length : "–"}</div></div>
     </div>
     ${!withCard.length ? `<div class="panel empty">Nessuna seduta analizzata. Le schede si creano automaticamente dopo ogni nuova sintesi${missing.length ? ", oppure usa “Analizza sedute mancanti”" : ""}.</div>` : `
@@ -1063,14 +1077,15 @@ async function renderTrend(patient, keepState) {
         </div>
         ${d.models.map(m => `${d.models.length > 1 ? `<div class="muted" style="margin-top:10px;font-size:13px">${esc(m.label)}</div>` : ""}
         ${radarSVG(m.radar.map(labelOf), [
-          { values: m.radar.map(k => withCard.find(s => s.id === st.a)?.card.processi[k]?.score), color: "#898781", dash: true },
-          { values: m.radar.map(k => withCard.find(s => s.id === st.b)?.card.processi[k]?.score), color: "#2a78d6" }])}`).join("")}
+          { values: m.radar.map(k => disp(withCard.find(s => s.id === st.a)?.card.processi[k])), color: "#898781", dash: true },
+          { values: m.radar.map(k => disp(withCard.find(s => s.id === st.b)?.card.processi[k])), color: m.scale === "intensity" ? "#6250d6" : "#2a78d6" }],
+          m.scale === "intensity" ? 3 : 5)}${m.scale === "intensity" ? `<div class="hint">Autismo: più esteso = indicatori più marcati (0–3). Non è una diagnosi.</div>` : ""}`).join("")}
       </div>
       <div style="display:grid;gap:16px">${d.models.map(m => { const procs = d.processes.filter(p => p.model === m.id); return `
       <div class="panel">
-        <h3 style="margin:0 0 8px;font-size:15px">Andamento per processo${d.models.length > 1 ? " · " + esc(m.label) : ""}</h3>
+        <h3 style="margin:0 0 8px;font-size:15px">${m.scale === "intensity" ? "Intensità per dominio (0–3)" : "Andamento per processo"}${d.models.length > 1 || m.scale === "intensity" ? " · " + esc(m.label) : ""}</h3>
         <div class="row" style="font-size:12px;gap:6px">${procs.map((p, i) => `<label class="chk"><input type="checkbox" data-k="${p.key}" ${st.shown.has(p.key) ? "checked" : ""}><i style="background:${PROC_COLORS[i % PROC_COLORS.length]}"></i>${esc(p.label)}</label>`).join("")}</div>
-        ${linesSVG(withCard, procs, st.shown)}
+        ${linesSVG(withCard, procs, st.shown, m.scale)}
         <div class="hint">Punto pieno = confermato dal terapeuta · punto vuoto = proposto da Gemma · sedute senza evidenza saltate</div>
       </div>`; }).join("")}</div>
     </div>
@@ -1078,7 +1093,7 @@ async function renderTrend(patient, keepState) {
       <table class="matrix"><thead><tr><th>Seduta</th>${d.processes.map(p => `<th>${esc(p.label)}</th>`).join("")}<th>Temi</th><th>Compiti prec.</th></tr></thead>
       <tbody>${d.sessions.filter(s => s.analyzable).map(s => `<tr data-s="${esc(s.id)}">
         <td class="nm">${esc(fmtShort(s.date))}<div class="hint">${esc(s.title)}${s.card?.source === "sintesi" ? " · da sintesi" : ""}</div></td>
-        ${s.card ? d.processes.map(p => { const c = s.card.processi[p.key]; return `<td><span class="cell ${scoreClass(c.score)} ${c.confirmed ? "conf" : ""}" title="${esc(c.evidence || "nessuna evidenza")}">${c.score || "–"}</span></td>`; }).join("")
+        ${s.card ? d.processes.map(p => { const c = s.card.processi[p.key], v = disp(c); return `<td><span class="cell ${c.scale === "intensity" ? (v == null ? "sc-na" : "sc-i" + v) : scoreClass(c.score)} ${c.confirmed ? "conf" : ""}" title="${esc(c.evidence || "nessuna evidenza")}">${v ?? "–"}</span></td>`; }).join("")
                  : `<td colspan="${d.processes.length}" class="muted">${s.job ? esc(PROC_STATUS[s.job.status] || s.job.status) : "non analizzata"}</td>`}
         <td class="hint">${s.card ? s.card.temi.slice(0, 3).map(esc).join(", ") : ""}</td>
         <td class="hint">${s.card?.compiti?.esito ? esc(s.card.compiti.esito) : ""}</td></tr>`).join("")}</tbody></table>
@@ -1136,7 +1151,7 @@ function openUpload() {
 // ------------------------------------------------------------ dialogs
 $("#dlgPatient").addEventListener("close", async () => {
   if ($("#dlgPatient").returnValue !== "ok") return;
-  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value, labels: parseLabels($("#formPatient").labels.value), models: $("#formPatient").models.value.split(","), allow_suffix: true }) });
+  try { const r = await api("/api/patients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("#formPatient").name.value, labels: parseLabels($("#formPatient").labels.value), models: [...document.querySelectorAll("#newModels input:checked")].map(i => i.value), allow_suffix: true }) });
         if (r.name.toLowerCase() !== baseName($("#formPatient").name.value)) toast("Creato come " + r.name + " (nome già usato)");
         location.hash = "#/p/" + enc(r.name); } catch (e) { alert(e.message); }
 });
