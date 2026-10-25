@@ -708,13 +708,43 @@ def run_summary(job: dict):
 
 # ---------------------------------------------------------------- process cards (hexaflex per session)
 
-PROCESSES = [  # key, label; score 1 = rigid pole, 5 = flexible pole, 0 = no evidence in the session
-    ("accettazione", "Accettazione"), ("defusione", "Defusione"), ("presente", "Momento presente"),
-    ("se_contesto", "Sé come contesto"), ("valori", "Valori"), ("azione", "Azione impegnata"),
-    ("autocompassione", "Autocompassione"),
-]
-HEXAFLEX = [k for k, _ in PROCESSES[:6]]
+# Process models; each patient uses one or both (paziente.json "modelli"). Score 1 = rigid, 5 = flexible, 0 = no evidence.
+MODELS = {
+    "hexaflex": {"label": "Hexaflex (ACT)", "radar": ["accettazione", "defusione", "presente", "se_contesto", "valori", "azione"],
+                 "processes": [
+        ("accettazione", "Accettazione", "disponibilità a sentire emozioni e sensazioni difficili (1 = evitamento esperienziale marcato)"),
+        ("defusione", "Defusione", "capacità di vedere i pensieri come pensieri (1 = fusione, pensieri presi alla lettera)"),
+        ("presente", "Momento presente", "contatto flessibile con il qui e ora (1 = rimuginio, ruminazione, pilota automatico)"),
+        ("se_contesto", "Sé come contesto", "prospettiva del sé osservante (1 = identificazione rigida con storie su di sé)"),
+        ("valori", "Valori", "chiarezza e contatto con ciò che conta (1 = valori assenti o confusi)"),
+        ("azione", "Azione impegnata", "comportamenti coerenti con i valori (1 = inazione, evitamento, impulsività)"),
+        ("autocompassione", "Autocompassione", "atteggiamento verso di sé nelle difficoltà (1 = autocritica dura)")]},
+    # DNA-v (Hayes & Ciarrochi): ACT for young people
+    "dnav": {"label": "DNA-v", "radar": ["d_discoverer", "d_noticer", "d_advisor", "d_valori", "d_self", "d_social"],
+             "processes": [
+        ("d_discoverer", "Discoverer", "esplorare, provare comportamenti nuovi e imparare da come vanno "
+                                       "(1 = evita il nuovo o ripete strategie che non funzionano)"),
+        ("d_noticer", "Noticer", "notare sensazioni del corpo, emozioni e pensieri nel momento presente "
+                                 "(1 = disconnesso dal corpo e dalle emozioni, oppure sopraffatto)"),
+        ("d_advisor", "Advisor", "rapporto con la voce interna di regole, giudizi e previsioni "
+                                 "(1 = segue rigidamente un consigliere critico anche quando non aiuta; 5 = lo usa quando è utile e lo lascia andare quando no)"),
+        ("d_valori", "Valori / vitalità (v)", "contatto con ciò che conta e dà vitalità (1 = assente, scelte guidate solo dall'evitamento)"),
+        ("d_self", "Self view", "visione di sé flessibile (1 = etichette rigide su di sé, es. 'sono stupido')"),
+        ("d_social", "Social view", "connessione con gli altri, comprensione della loro prospettiva, appartenenza (1 = isolamento o ostilità)")]},
+}
+DEFAULT_MODELS = ["hexaflex"]
+PROCESS_INFO = {k: (label, desc) for m in MODELS.values() for k, label, desc in m["processes"]}
+PROCESSES = [(k, v[0]) for k, v in PROCESS_INFO.items()]  # every known process, for validation
+HEXAFLEX = MODELS["hexaflex"]["radar"]
 
+
+def patient_models(pdir: Path):
+    models = (read_json(pdir / "paziente.json", {}) or {}).get("modelli") or DEFAULT_MODELS
+    return [m for m in models if m in MODELS] or DEFAULT_MODELS
+
+
+def model_processes(models):
+    return [(k, label, desc) for m in models for k, label, desc in MODELS[m]["processes"]]
 
 def load_vocabulary():
     """skills/_vocabolario.md -> {'temi': [...], 'valori': [...], 'interventi': [...]} (terms shared by all sessions)."""
@@ -738,19 +768,13 @@ def vocabulary_prompt():
             "corrispondono; solo se nessuno corrisponde scrivi un termine nuovo breve (1-3 parole, minuscolo).\n"
             + "\n".join(lines))
 
-PROCESS_PROMPT = """COMPITO DIVERSO: invece della sintesi, compila una SCHEDA DEI PROCESSI di questa seduta in JSON.
+PROCESS_PROMPT_HEAD = """COMPITO DIVERSO: invece della sintesi, compila una SCHEDA DEI PROCESSI di questa seduta in JSON.
 
 Per ciascun processo assegna un punteggio sulla base di ciò che il paziente porta IN QUESTA SEDUTA:
 1 = forte rigidità (polo inflessibile), 2 = rigidità prevalente, 3 = misto, 4 = flessibilità prevalente, 5 = forte flessibilità.
 0 = nessuna evidenza nella trascrizione (usalo quando il processo non emerge: non indovinare).
-- accettazione: disponibilità a sentire emozioni e sensazioni difficili (1 = evitamento esperienziale marcato)
-- defusione: capacità di vedere i pensieri come pensieri (1 = fusione, pensieri presi alla lettera)
-- presente: contatto flessibile con il qui e ora (1 = rimuginio, ruminazione, pilota automatico)
-- se_contesto: prospettiva del sé osservante (1 = identificazione rigida con storie su di sé)
-- valori: chiarezza e contatto con ciò che conta (1 = valori assenti o confusi)
-- azione: comportamenti coerenti con i valori (1 = inazione, evitamento, impulsività)
-- autocompassione: atteggiamento verso di sé nelle difficoltà (1 = autocritica dura)
-Per ogni processo scrivi in "evidenza" un esempio telegrafico dalla trascrizione (massimo 12 parole), o "" se il punteggio è 0.
+"""
+PROCESS_PROMPT_TAIL = """Per ogni processo scrivi in "evidenza" un esempio telegrafico dalla trascrizione (massimo 12 parole), o "" se il punteggio è 0.
 Compila anche, in modo telegrafico: temi (max 4, 1-3 parole ciascuno), valori_emersi (1-4 parole ciascuno),
 azioni_concordate per la prossima volta (max 8 parole ciascuna), compiti_precedenti (esito dei compiti della seduta
 prima: svolti, parziali, non svolti, non discussi; nota max 10 parole), rischio (max 10 parole) e interventi (max 6:
@@ -759,26 +783,35 @@ tecniche, esercizi e metafore usati dal terapeuta in questa seduta, ognuno col s
 Se in una lista non c'è nulla da mettere lasciala vuota ([]): non scrivere frasi come "non affrontati".
 Rispondi solo con il JSON."""
 
-PROCESS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "processi": {"type": "object", "properties": {
-            k: {"type": "object", "properties": {"punteggio": {"type": "integer", "enum": [0, 1, 2, 3, 4, 5]},
-                                                 "evidenza": {"type": "string"}},
-                "required": ["punteggio", "evidenza"]} for k, _ in PROCESSES},
-            "required": [k for k, _ in PROCESSES]},
-        "temi": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
-        "valori_emersi": {"type": "array", "items": {"type": "string"}},
-        "azioni_concordate": {"type": "array", "items": {"type": "string"}},
-        "compiti_precedenti": {"type": "object", "properties": {
-            "esito": {"type": "string", "enum": ["svolti", "parziali", "non svolti", "non discussi"]},
-            "nota": {"type": "string"}}, "required": ["esito", "nota"]},
-        "rischio": {"type": "string"},
-        "interventi": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
-    },
-    "required": ["processi", "temi", "valori_emersi", "azioni_concordate", "compiti_precedenti", "rischio",
-                 "interventi"],
-}
+
+def process_prompt(models):
+    names = " e ".join(MODELS[m]["label"] for m in models)
+    lines = [f"- {k}: {desc}" for k, _, desc in model_processes(models)]
+    return PROCESS_PROMPT_HEAD + f"Modello: {names}.\n" + "\n".join(lines) + "\n" + PROCESS_PROMPT_TAIL
+
+
+def process_schema(models):
+    keys = [k for k, _, _ in model_processes(models)]
+    return {
+        "type": "object",
+        "properties": {
+            "processi": {"type": "object", "properties": {
+                k: {"type": "object", "properties": {"punteggio": {"type": "integer", "enum": [0, 1, 2, 3, 4, 5]},
+                                                     "evidenza": {"type": "string"}},
+                    "required": ["punteggio", "evidenza"]} for k in keys},
+                "required": keys},
+            "temi": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+            "valori_emersi": {"type": "array", "items": {"type": "string"}},
+            "azioni_concordate": {"type": "array", "items": {"type": "string"}},
+            "compiti_precedenti": {"type": "object", "properties": {
+                "esito": {"type": "string", "enum": ["svolti", "parziali", "non svolti", "non discussi"]},
+                "nota": {"type": "string"}}, "required": ["esito", "nota"]},
+            "rischio": {"type": "string"},
+            "interventi": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        },
+        "required": ["processi", "temi", "valori_emersi", "azioni_concordate", "compiti_precedenti", "rischio",
+                     "interventi"],
+    }
 
 
 def process_key(patient, session):
@@ -796,6 +829,7 @@ def enqueue_process_card(patient: str, session: str, skill_id: str = ""):
 
 def run_process_card(job: dict):
     sdir = ROOT / job["patient"] / job["session"]
+    models = patient_models(sdir.parent)
     txt = sdir / "transcript.txt"
     meta = read_json(sdir / "meta.json", {}) or {}
     try:
@@ -823,9 +857,9 @@ def run_process_card(job: dict):
         LLM_SERVER.ensure()
         job["status"] = "reading"
         text, timings = LLM_SERVER.stream_chat(
-            [{"role": "system", "content": system}, {"role": "user", "content": head + "\n\n" + PROCESS_PROMPT + vocabulary_prompt()}],
+            [{"role": "system", "content": system}, {"role": "user", "content": head + "\n\n" + process_prompt(models) + vocabulary_prompt()}],
             lambda p: job.update(progress=p), lambda t: job.update(status="writing", partial=t),
-            response_format={"type": "json_schema", "json_schema": {"name": "scheda", "schema": PROCESS_SCHEMA}},
+            response_format={"type": "json_schema", "json_schema": {"name": "scheda", "schema": process_schema(models)}},
             max_tokens=1200)
     finally:
         LLM_SERVER.busy = False
@@ -860,18 +894,22 @@ def effective_card(sdir: Path):
     if not data:
         return None
     prop, conf = data.get("proposed", {}), data.get("confirmed", {})
-    procs = {}
-    for k, label in PROCESSES:
+    models = patient_models(sdir.parent)
+    procs, keys = {}, [k for k, _, _ in model_processes(models)]
+    for k, label, _ in model_processes(models):
         p = (prop.get("processi") or {}).get(k) or {}
         proposed = p.get("punteggio") if isinstance(p.get("punteggio"), int) else 0
         value = conf[k] if k in conf else proposed
-        procs[k] = {"label": label, "score": value or None, "proposed": proposed or None,
-                    "confirmed": k in conf, "evidence": p.get("evidenza", "")}
+        procs[k] = {"label": label, "score": value or None, "proposed": proposed or None, "confirmed": k in conf,
+                    "evidence": p.get("evidenza", ""), "model": next(m for m in models if k in dict((x[0], 1) for x in MODELS[m]["processes"]))}
     return {"processi": procs, "temi": prop.get("temi", []), "valori": prop.get("valori_emersi", []),
             "azioni": prop.get("azioni_concordate", []), "compiti": prop.get("compiti_precedenti", {}),
             "interventi": prop.get("interventi"),  # None on cards made before the graph existed
             "rischio": prop.get("rischio", ""), "generated_at": data.get("generated_at"),
-            "all_confirmed": all(k in conf for k, _ in PROCESSES), "source": data.get("source", "trascrizione")}
+            "all_confirmed": all(k in conf for k in keys), "source": data.get("source", "trascrizione"),
+            "models": models,
+            # card made before a model was added to this patient (e.g. DNA-v): "Aggiorna schede" completes it
+            "incomplete": any(k not in (prop.get("processi") or {}) for k in keys)}
 
 
 GRAMMAR_PROMPT = (
@@ -1157,11 +1195,16 @@ app = FastAPI(title="FlexScribe")
 class NewPatient(BaseModel):
     name: str
     labels: list[str] = []
+    models: list[str] = []
     allow_suffix: bool = False  # on a name collision create 'NAME (2)' instead of refusing
 
 
 class LabelsUpdate(BaseModel):
     labels: list[str]
+
+
+class ModelsUpdate(BaseModel):
+    models: list[str]  # ["hexaflex"], ["dnav"] or both
 
 
 def patient_labels(pdir: Path):
@@ -1226,6 +1269,7 @@ def get_patients():
             "busy": sum(1 for s in sessions if s["status"] in ("queued", "converting", "loading", "transcribing")),
             "pending": sum(1 for s in sessions if s["status"] in ("pending", "error")),
             "labels": patient_labels(p),
+            "models": patient_models(p),
         })
     return out
 
@@ -1246,7 +1290,24 @@ def create_patient(body: NewPatient):
     p.mkdir(parents=True)
     if body.labels:
         save_patient_labels(p, body.labels)
+    if body.models:
+        save_patient_models(p, body.models)
     return {"name": name}
+
+
+def save_patient_models(pdir: Path, models):
+    models = [m for m in dict.fromkeys(models) if m in MODELS]
+    if not models:
+        raise HTTPException(400, "Scegli almeno un modello")
+    data = read_json(pdir / "paziente.json", {}) or {}
+    data["modelli"] = models
+    write_json(pdir / "paziente.json", data)
+    return models
+
+
+@app.put("/api/patients/{patient}/modelli")
+def set_patient_models(patient: str, body: ModelsUpdate):
+    return {"models": save_patient_models(patient_dir(patient), body.models)}
 
 
 @app.put("/api/patients/{patient}/etichette")
@@ -1257,7 +1318,8 @@ def set_patient_labels(patient: str, body: LabelsUpdate):
 @app.get("/api/patients/{patient}")
 def get_patient(patient: str):
     pdir = patient_dir(patient)
-    return {"name": pdir.name, "sessions": list_sessions(pdir), "labels": patient_labels(pdir)}
+    return {"name": pdir.name, "sessions": list_sessions(pdir), "labels": patient_labels(pdir),
+            "models": patient_models(pdir)}
 
 
 @app.post("/api/patients/{patient}/sessions")
@@ -1380,7 +1442,9 @@ def get_trend(patient: str):
         out.append({"id": s["id"], "date": s["date"], "title": s["title"],
                     "analyzable": analyzable(sdir), "card": effective_card(sdir),
                     "job": process_job_info(pdir.name, s["id"])})
-    return {"patient": pdir.name, "processes": [{"key": k, "label": l} for k, l in PROCESSES],
+    models = patient_models(pdir)
+    return {"patient": pdir.name, "processes": [{"key": k, "label": l} for k, l, _ in model_processes(models)],
+            "models": [{"id": m, "label": MODELS[m]["label"], "radar": MODELS[m]["radar"]} for m in models],
             "hexaflex": HEXAFLEX, "sessions": out}
 
 
@@ -1391,7 +1455,8 @@ def analyze_missing(patient: str):
     n = 0
     for s in list_sessions(pdir):
         sdir = pdir / s["id"]
-        if analyzable(sdir) and not (sdir / "processi.json").exists():
+        card = effective_card(sdir)
+        if analyzable(sdir) and (card is None or card["incomplete"]):  # missing, or lacking a model added later
             enqueue_process_card(pdir.name, s["id"])
             n += 1
     return {"queued": n}
@@ -1437,7 +1502,7 @@ def get_graph(patient: str):
         if not card:
             missing += analyzable(sdir)
             continue
-        if card.get("interventi") is None:
+        if card.get("interventi") is None or card["incomplete"]:
             outdated += 1
         sid = "s:" + s["id"]
         nodes.append({"id": sid, "type": "seduta", "session": s["id"], "date": s["date"], "title": s["title"],
@@ -1473,7 +1538,7 @@ def refresh_graph_cards(patient: str):
     for s in list_sessions(pdir):
         sdir = pdir / s["id"]
         card = effective_card(sdir)
-        if analyzable(sdir) and (card is None or card.get("interventi") is None):
+        if analyzable(sdir) and (card is None or card.get("interventi") is None or card["incomplete"]):
             enqueue_process_card(pdir.name, s["id"])
             n += 1
     return {"queued": n}
