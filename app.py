@@ -509,7 +509,12 @@ class LLM:
                    "-ngl", str(CFG["llm_gpu_layers"]), "--device", CFG["llm_device"],
                    *(["--spec-type", CFG["llm_spec"]] if CFG["llm_spec"] else []),
                    "--reasoning", "off", "--offline"]
-            logf = open(self.log, "w", encoding="utf-8", errors="replace")
+            # keep previous runs in the log (a crash is diagnosed after the restart); rotate at 5 MB
+            if self.log.exists() and self.log.stat().st_size > 5_000_000:
+                self.log.replace(self.log.with_suffix(".old.log"))
+            logf = open(self.log, "a", encoding="utf-8", errors="replace")
+            logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} avvio: {' '.join(cmd[1:])}\n")
+            logf.flush()
             self.proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                          creationflags=subprocess.CREATE_NO_WINDOW)
             deadline = time.time() + 300
@@ -545,6 +550,20 @@ class LLM:
         return bool(self.proc and self.proc.poll() is None)
 
     def stream_chat(self, messages, on_prompt_progress, on_text, response_format=None, max_tokens=3000):
+        """One chat request; if the llama server dies mid-request it is restarted and the request retried once."""
+        try:
+            return self._stream_chat(messages, on_prompt_progress, on_text, response_format, max_tokens)
+        except (ConnectionError, urllib.error.URLError, OSError) as e:
+            code = self.proc.poll() if self.proc else None
+            with open(self.log, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} richiesta interrotta ({e}); "
+                        f"codice di uscita del server: {code}. Riavvio e riprovo una volta.\n")
+            self.stop()
+            self.ensure()
+            on_text("")
+            return self._stream_chat(messages, on_prompt_progress, on_text, response_format, max_tokens)
+
+    def _stream_chat(self, messages, on_prompt_progress, on_text, response_format=None, max_tokens=3000):
         payload = {"messages": messages, "stream": True, "temperature": CFG["llm_temperature"],
                    "max_tokens": max_tokens, "return_progress": True}
         if response_format:
@@ -780,6 +799,7 @@ azioni_concordate per la prossima volta (max 8 parole ciascuna), compiti_precede
 prima: svolti, parziali, non svolti, non discussi; nota max 10 parole), rischio (max 10 parole) e interventi (max 6:
 tecniche, esercizi e metafore usati dal terapeuta in questa seduta, ognuno col suo nome specifico, per esempio
 "passeggeri sull'autobus" e non "metafora").
+Per compiti_precedenti guarda soprattutto l'inizio della seduta: se il terapeuta chiede com'è andato un compito o un esercizio della volta prima e il paziente risponde, l'esito NON è "non discussi" (usa svolti, parziali o non svolti).
 Se in una lista non c'è nulla da mettere lasciala vuota ([]): non scrivere frasi come "non affrontati".
 Rispondi solo con il JSON."""
 
