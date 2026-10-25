@@ -188,7 +188,7 @@ const fmtDate = d => d ? new Date(d + "T00:00").toLocaleDateString("it-IT", { da
 const fmtTs = s => { s = Math.floor(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60; return (h ? h + ":" : "") + String(m).padStart(h?2:1,"0") + ":" + String(x).padStart(2,"0"); };
 const STATUS = {
   queued: ["In coda", "b-busy"], converting: ["Conversione…", "b-busy"], loading: ["Caricamento modello…", "b-busy"], transcribing: ["Trascrizione…", "b-busy"],
-  done: ["Trascritta", "b-done"], pending: ["Da trascrivere", "b-pending"], error: ["Errore", "b-error"], empty: ["Senza audio", "b-pending"],
+  done: ["Trascritta", "b-done"], pending: ["Da trascrivere", "b-pending"], error: ["Errore", "b-error"], empty: ["Senza audio", "b-pending"], imported: ["Sintesi importata", "b-done"],
 };
 const modelLabel = id => (config.models.find(m => m.id === id)?.label || id.replace("ggml-","").replace(".bin","")).replace(/ \(.*\)$/, "");
 const badge = st => `<span class="badge ${STATUS[st][1]}">${STATUS[st][0]}</span>`;
@@ -238,6 +238,8 @@ async function renderPatient(patient, sessionId) {
     <div class="toolbar">
       <button onclick="location.hash='#/'">← Pazienti</button>
       <span class="spacer" style="flex:1"></span>
+      <button id="btnImport" title="Importa sintesi in PDF fatte con un'altra applicazione (la data viene letta dal nome del file)">Importa sintesi PDF</button>
+      <input type="file" id="importFiles" accept=".pdf,application/pdf" multiple hidden>
       <button id="btnTrend" title="Andamento dei processi nelle sedute">Andamento</button>
       <button class="primary" id="btnUpload">+ Nuova trascrizione</button>
     </div>
@@ -254,6 +256,18 @@ async function renderPatient(patient, sessionId) {
   document.querySelectorAll("#sessions .item").forEach(i => i.onclick = () => location.hash = `#/p/${enc(patient)}/${enc(i.dataset.s)}`);
   $("#btnUpload").onclick = openUpload;
   $("#btnTrend").onclick = () => location.hash = "#/a/" + enc(patient);
+  $("#btnImport").onclick = () => $("#importFiles").click();
+  $("#importFiles").onchange = async e => {
+    const fd = new FormData(); [...e.target.files].forEach(f => fd.append("files", f));
+    if (!e.target.files.length) return;
+    toast("Importazione in corso…");
+    try {
+      const r = await api(`/api/patients/${enc(patient)}/import`, { method: "POST", body: fd });
+      if (r.errors.length) alert("Non importati:\n" + r.errors.map(x => `• ${x.file}: ${x.error}`).join("\n"));
+      if (r.created.length) { toast(`${r.created.length} sintes${r.created.length === 1 ? "i importata" : "i importate"}`); location.hash = `#/p/${enc(patient)}/${enc(r.created[r.created.length - 1])}`; route(); }
+    } catch (err) { alert(err.message); }
+    e.target.value = "";
+  };
   if (sessionId) renderSession(patient, sessionId);
   else $("#detail").innerHTML = `<div class="panel empty">Carica un file audio per creare la prima trascrizione.</div>`;
 }
@@ -266,12 +280,15 @@ async function renderSession(patient, sessionId) {
   const sumActive = s.summary_job && !["done", "error"].includes(s.summary_job.status);
   const procActive = s.processi_job && !["done", "error"].includes(s.processi_job.status);
   const busy = ["queued","converting","loading","transcribing"].includes(s.status);
+  const imported = s.status === "imported", showTabs = s.status === "done" || imported;
+  if (imported && ["text", "seg"].includes(current.tab)) current.tab = "sum";
   const base = `/api/patients/${enc(patient)}/sessions/${enc(sessionId)}`;
   $("#detail").innerHTML = `
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <div><h2>${esc(s.title)}</h2><div class="muted">${esc(fmtDate(s.date))}${s.meta.model ? " · " + esc(modelLabel(s.meta.model)) : ""}${s.meta.transcribed_at ? " · trascritta il " + esc(s.meta.transcribed_at) : ""}</div></div>
+        <div><h2>${esc(s.title)}</h2><div class="muted">${esc(fmtDate(s.date))}${s.meta.model ? " · " + esc(modelLabel(s.meta.model)) : ""}${s.meta.transcribed_at ? " · trascritta il " + esc(s.meta.transcribed_at) : ""}${imported ? " · sintesi importata da " + esc(s.meta.original_filename || "PDF") : ""}</div></div>
         <div class="row">
+          ${s.meta.source === "sintesi importata" ? `<a class="btn" href="${base}/originale" target="_blank" style="text-decoration:none">PDF originale</a>` : ""}
           <button id="btnFolder" title="Apri la cartella in Esplora file">Apri cartella</button>
           ${s.has_audio && !busy ? `<button id="btnRedo">${s.status === "done" ? "Ritrascrivi" : "Trascrivi"}</button>` : ""}
         </div>
@@ -279,8 +296,8 @@ async function renderSession(patient, sessionId) {
       ${s.has_audio ? `<audio id="player" controls preload="metadata" src="${base}/audio"></audio>` : ""}
       ${busy ? `<div style="margin-top:16px">${badge(s.status)} <span class="muted">${s.progress||0}%</span><div class="progress"><div style="width:${s.progress||0}%"></div></div><p class="muted">Puoi chiudere questa pagina: la trascrizione continua in background.</p></div>` : ""}
       ${s.status === "error" ? `<p class="badge b-error" style="display:block;margin:14px 0 0;padding:10px;border-radius:8px;white-space:pre-wrap">${esc(s.error)}</p>` : ""}
-      ${s.status === "done" ? `
-        <div class="tabs"><button data-tab="text">Testo</button><button data-tab="seg">Segmenti con orari</button><button data-tab="sum">Sintesi clinica${sumActive ? '<span class="dot"></span>' : s.summaries.length ? ` (${s.summaries.length})` : ""}</button><button data-tab="proc">Processi${procActive ? '<span class="dot"></span>' : s.processi ? " ✓" : ""}</button></div>
+      ${showTabs ? `
+        <div class="tabs">${imported ? "" : `<button data-tab="text">Testo</button><button data-tab="seg">Segmenti con orari</button>`}<button data-tab="sum">Sintesi clinica${sumActive ? '<span class="dot"></span>' : s.summaries.length ? ` (${s.summaries.length})` : ""}</button><button data-tab="proc">Processi${procActive ? '<span class="dot"></span>' : s.processi ? " ✓" : ""}</button></div>
         <div id="tabBody"></div>` : ""}
     </div>`;
   $("#btnFolder").onclick = () => api(base + "/open", { method: "POST" });
@@ -290,7 +307,7 @@ async function renderSession(patient, sessionId) {
     await api(base + "/transcribe?model=" + enc(config.default_model), { method: "POST" });
     toast("Aggiunta alla coda"); route();
   };
-  if (s.status === "done") {
+  if (showTabs) {
     document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
       if (current.dirty && !confirm("Ci sono modifiche non salvate. Cambiare scheda?")) return;
       current.dirty = false; current.editing = false; current.tab = b.dataset.tab; drawTab();
@@ -313,7 +330,7 @@ function drawSummary(body) {
   let html = `<div class="row" style="margin-bottom:12px">
       ${s.summaries.length > 1 ? `<select id="sumPick">${s.summaries.map(x => `<option value="${esc(x.skill)}" ${x.skill === current.summary ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : ""}
       <span style="flex:1"></span>
-      <button class="primary" id="btnNewSum" ${active ? "disabled" : ""}>+ Nuova sintesi</button>
+      ${s.status === "imported" ? "" : `<button class="primary" id="btnNewSum" ${active ? "disabled" : ""}>+ Nuova sintesi</button>`}
     </div>`;
   if (active) {
     const label = (job.status === "writing" ? SUM_WRITING[job.mode || "generate"] : SUM_STATUS[job.status])
@@ -325,7 +342,10 @@ function drawSummary(body) {
     html += `<p class="badge b-error" style="display:block;margin:0 0 12px;padding:10px;border-radius:8px;white-space:pre-wrap">${esc(job.error)}</p>`;
   }
   if (!active && sel) {
-    html += `<p class="ai-warn">Bozza generata dall'IA (${esc(info?.llm || "LLM locale")}${info?.generated_at ? ", " + esc(info.generated_at) : ""}): verificala sempre prima di usarla.</p>
+    html += sel.skill === "importata" && !info?.history?.length
+      ? `<p class="hint" style="margin:0 0 10px">Sintesi importata dal PDF “${esc(s.meta.original_filename || "")}”${s.meta.imported_at ? " il " + esc(s.meta.imported_at) : ""}. Il testo è estratto dal PDF: controlla l'impaginazione.</p>`
+      : `<p class="ai-warn">Bozza generata dall'IA (${esc(info?.llm || "LLM locale")}${info?.generated_at ? ", " + esc(info.generated_at) : ""}): verificala sempre prima di usarla.</p>`;
+    html += `
       ${current.editing ? `<textarea class="transcript" id="sumTxt"></textarea>` : `<div class="note" id="sumView">${md(sel.text)}</div>`}
       <div class="row" style="margin-top:12px">
         ${current.editing ? `<button class="primary" id="btnSumSave">Salva</button><button id="btnSumSaveCheck">Salva e controlla grammatica</button><button id="btnSumCancel">Annulla</button>`
@@ -333,7 +353,7 @@ function drawSummary(body) {
                              <button id="btnSumEdit" title="Modifica il testo a mano">Modifica testo</button>
                              <button id="btnSumGrammar" title="Corregge ortografia e grammatica senza cambiare il contenuto">Controllo grammatica</button>
                              <button id="btnSumCopy">Copia</button>
-                             <button id="btnSumRedo" title="Genera di nuovo da zero">Rigenera</button>
+                             ${s.status === "imported" ? "" : `<button id="btnSumRedo" title="Genera di nuovo da zero">Rigenera</button>`}
                              ${sel.versions ? `<button id="btnSumUndo" title="Torna alla versione precedente">Annulla ultima modifica</button>` : ""}`}
       </div>
       ${lastOperation(info)}
@@ -464,7 +484,7 @@ function drawProcess(body) {
              <button class="primary" id="btnProcNew">Analizza processi</button></div>`;
   }
   if (card) {
-    html += `<p class="ai-warn">Punteggi proposti da Gemma (${esc(card.generated_at || "")}): clicca un valore per confermarlo o correggerlo. 1 = rigidità, 5 = flessibilità, “–” = nessuna evidenza.</p>
+    html += `<p class="ai-warn">Punteggi proposti da Gemma${card.source === "sintesi" ? " <b>sulla base della sintesi</b> (non c'è la trascrizione: evidenze meno precise)" : ""} (${esc(card.generated_at || "")}): clicca un valore per confermarlo o correggerlo. 1 = rigidità, 5 = flessibilità, “–” = nessuna evidenza.</p>
       <table class="proc"><tbody>${Object.entries(card.processi).map(([k, p]) => `
         <tr><td class="pl">${esc(p.label)}<div class="hint">${p.confirmed ? "confermato" : "proposto da Gemma"}</div></td>
           <td class="sc">${[0,1,2,3,4,5].map(v => `<button class="scb ${(p.score || 0) === v ? "on " + scoreClass(v) + (p.confirmed ? " conf" : "") : ""}" data-k="${k}" data-v="${v}" title="${v ? v : "nessuna evidenza"}">${v || "–"}</button>`).join("")}</td>
@@ -562,7 +582,7 @@ async function renderTrend(patient, keepState) {
   current.patient = patient;
   const st = keepState && renderTrend.state || { a: null, b: null, shown: new Set(d.hexaflex) };
   renderTrend.state = st;
-  const withCard = d.sessions.filter(s => s.card), missing = d.sessions.filter(s => s.has_transcript && !s.card && !s.job);
+  const withCard = d.sessions.filter(s => s.card), missing = d.sessions.filter(s => s.analyzable && !s.card && !s.job);
   const running = d.sessions.filter(s => s.job && !["done", "error"].includes(s.job.status));
   if (!st.a && withCard.length) st.a = withCard[0].id;
   if (!st.b && withCard.length) st.b = withCard[withCard.length - 1].id;
@@ -580,7 +600,7 @@ async function renderTrend(patient, keepState) {
       ${missing.length ? `<button class="primary" id="btnBackfill">Analizza ${missing.length} sedut${missing.length === 1 ? "a" : "e"} mancant${missing.length === 1 ? "e" : "i"}</button>` : ""}
     </div>
     <div class="kpis">
-      <div class="kpi"><div class="muted">Sedute analizzate</div><div class="kv">${withCard.length} di ${d.sessions.filter(s => s.has_transcript).length}</div></div>
+      <div class="kpi"><div class="muted">Sedute analizzate</div><div class="kv">${withCard.length} di ${d.sessions.filter(s => s.analyzable).length}</div></div>
       <div class="kpi"><div class="muted">Flessibilità media (hexaflex)</div><div class="kv">${withCard.length > 1 ? fmt1(flex(first)) + " → " + fmt1(flex(last)) : fmt1(last && flex(last))}</div></div>
       <div class="kpi"><div class="muted">Compiti svolti (anche in parte)</div><div class="kv">${hw.length ? hw.filter(e => e !== "non svolti").length + " / " + hw.length : "–"}</div></div>
     </div>
@@ -605,8 +625,8 @@ async function renderTrend(patient, keepState) {
     </div>
     <div class="panel" style="margin-top:16px;overflow-x:auto">
       <table class="matrix"><thead><tr><th>Seduta</th>${d.processes.map(p => `<th>${esc(p.label)}</th>`).join("")}<th>Temi</th><th>Compiti prec.</th></tr></thead>
-      <tbody>${d.sessions.filter(s => s.has_transcript).map(s => `<tr data-s="${esc(s.id)}">
-        <td class="nm">${esc(fmtShort(s.date))}<div class="hint">${esc(s.title)}</div></td>
+      <tbody>${d.sessions.filter(s => s.analyzable).map(s => `<tr data-s="${esc(s.id)}">
+        <td class="nm">${esc(fmtShort(s.date))}<div class="hint">${esc(s.title)}${s.card?.source === "sintesi" ? " · da sintesi" : ""}</div></td>
         ${s.card ? d.processes.map(p => { const c = s.card.processi[p.key]; return `<td><span class="cell ${scoreClass(c.score)} ${c.confirmed ? "conf" : ""}" title="${esc(c.evidence || "nessuna evidenza")}">${c.score || "–"}</span></td>`; }).join("")
                  : `<td colspan="${d.processes.length}" class="muted">${s.job ? esc(PROC_STATUS[s.job.status] || s.job.status) : "non analizzata"}</td>`}
         <td class="hint">${s.card ? s.card.temi.slice(0, 3).map(esc).join(", ") : ""}</td>

@@ -24,6 +24,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -157,8 +158,10 @@ def session_info(sdir: Path):
         status = "done"
     elif job and job["status"] == "error":
         status = "error"
+    elif find_audio(sdir):
+        status = "pending"
     else:
-        status = "pending" if find_audio(sdir) else "empty"
+        status = "imported" if any(sdir.glob("sintesi_*.md")) else "empty"
     preview = ""
     if has_text:
         preview = (sdir / "transcript.txt").read_text(encoding="utf-8", errors="replace")[:220].strip()
@@ -185,36 +188,140 @@ def summary_job_info(patient, session):
     return {k: j.get(k) for k in ("status", "progress", "skill", "mode", "partial", "error", "details")}
 
 
-DATE_IN_NAME = re.compile(r"(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])")
+DATE_PATTERNS = [  # (regex, order of the groups) - ISO first, then Italian day-month-year
+    (re.compile(r"(?<!\d)(20\d{2})[-_. ](\d{1,2})[-_. ](\d{1,2})(?!\d)"), "ymd"),   # 2026-09-12
+    (re.compile(r"(?<!\d)(\d{1,2})[-_. ](\d{1,2})[-_. ](20\d{2})(?!\d)"), "dmy"),   # 12-09-2026, 12.09.2026
+    (re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)"), "ymd"),                   # 20260912
+    (re.compile(r"(?<!\d)(\d{2})(\d{2})(20\d{2})(?!\d)"), "dmy"),                   # 12092026
+]
+MONTHS = {m: i for i, m in enumerate(["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"], 1)}
+MONTH_NAME_DATE = re.compile(r"(?<!\d)(\d{1,2})[-_. ]*(gen\w*|feb\w*|mar\w*|apr\w*|mag\w*|giu\w*|lug\w*|ago\w*|set\w*|ott\w*|"
+                             r"nov\w*|dic\w*)[-_. ]*(20\d{2})(?!\d)", re.IGNORECASE)  # 12 settembre 2026
+IMPORTED_SKILL = "importata"  # summaries brought in from another app (PDF)
 
 
-def adopt_loose_audio(pdir: Path):
-    """Audio dropped straight into a patient folder gets its own dated session folder.
+def date_in_name(stem: str):
+    """(ISO date, matched text) from a file name such as 'Rossi 12-09-2026', '2026-09-12_seduta', 'REC_20260912'."""
+    for rx, order in DATE_PATTERNS + [(MONTH_NAME_DATE, "dmy")]:
+        for m in rx.finditer(stem):
+            g = m.groups()
+            y, mo, d = (g[0], g[1], g[2]) if order == "ymd" else (g[2], g[1], g[0])
+            mo = MONTHS.get(mo[:3].lower(), mo)
+            try:
+                return date(int(y), int(mo), int(d)).isoformat(), m.group(0)
+            except ValueError:
+                continue
+    return None, ""
 
-    The date comes from the file name when it contains one (e.g. 'REC_20261018_1430.m4a',
-    'Registrazione 2026-10-18.mp3'), otherwise from the file's modification time.
+
+def session_title_from(stem: str, matched: str, patient: str):
+    """Readable title from the rest of the file name, without the date and the patient's name."""
+    t = stem.replace(matched, " ") if matched else stem
+    for word in patient.split():
+        t = re.sub(rf"\b{re.escape(word)}\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"[_\s]+", " ", t).strip(" -_.")
+    return re.sub(r"\b([01]\d|2[0-3])([0-5]\d)([0-5]\d)?\b", r"ore \1:\2", t)  # REC_..._143000
+
+
+def new_session_dir(pdir: Path, d: str, title: str):
+    try:
+        base = f"{d}_{safe_name(title)[:60].replace(' ', '_')}" if title else f"{d}_seduta"
+    except HTTPException:
+        base = f"{d}_seduta"
+    name, n = base, 2
+    while (pdir / name).exists():
+        name, n = f"{base}_{n}", n + 1
+    return pdir / name
+
+
+BULLET = re.compile(r"^\s*[•●▪◦‣∙·\-–*]\s+")
+
+
+def pdf_text(path: Path):
+    """Text of a PDF as light Markdown: paragraphs re-joined, short title-like lines as '## ' headings,
+    bullets as '- ', typographic ligatures (ﬀ, ﬁ) expanded."""
+    import unicodedata
+    from pypdf import PdfReader
+    raw = "\n".join(p.extract_text() or "" for p in PdfReader(str(path)).pages)
+    raw = unicodedata.normalize("NFKC", raw).replace(" ", " ")
+    raw = re.sub(r"(\w)-\n(\w)", r"\1\2", raw)  # re-join words hyphenated at the end of a line
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in raw.splitlines()]
+    out = []
+    for ln in lines:
+        if not ln:
+            out.append("")
+            continue
+        is_bullet = bool(BULLET.match(ln))
+        heading = (len(ln) <= 60 and not is_bullet and ln[0].isupper() and not re.search(r"[.,;:!?)]$", ln)
+                   and ":" not in ln and len(ln.split()) <= 7)
+        prev = out[-1] if out else ""
+        # a line that continues the previous sentence (PDF line wrap): join it
+        if (prev and not is_bullet and not heading and not prev.startswith("## ")
+                and not re.search(r"[.:;!?]$", prev) and (ln[0].islower() or ln[0] in "(\"'«")):
+            out[-1] = prev + " " + ln
+        elif heading and out and not (prev and not re.search(r"[.:;!?\"»)]$", prev) and ln[0].islower()):
+            out += ["", "## " + ln] if prev else ["## " + ln]
+        elif is_bullet:
+            out.append("- " + BULLET.sub("", ln))
+        else:
+            out.append(ln)
+    text = "\n".join(out)
+    text = re.sub(r"\n(## )", r"\n\n\1", text)
+    text = re.sub(r"(## [^\n]+)\n(?!\n)", r"\1\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def import_summary_pdf(pdir: Path, src: Path, original_name: str, move: bool):
+    """Create a session from a summary PDF made with another app. Returns the session folder name."""
+    stem = Path(original_name).stem
+    d, matched = date_in_name(stem)
+    if not d:
+        d = time.strftime("%Y-%m-%d", time.localtime(src.stat().st_mtime))
+    text = pdf_text(src)
+    if len(text) < 20:
+        raise ValueError("il PDF non contiene testo (forse è una scansione)")
+    title = session_title_from(stem, matched, pdir.name) or "Seduta"
+    sdir = new_session_dir(pdir, d, title)
+    sdir.mkdir()
+    try:
+        (shutil.move if move else shutil.copy2)(str(src), sdir / "sintesi_originale.pdf")
+    except OSError:
+        shutil.rmtree(sdir, ignore_errors=True)
+        raise
+    (sdir / f"sintesi_{IMPORTED_SKILL}.md").write_text(text + "\n", encoding="utf-8")
+    write_json(sdir / "meta.json", {"date": d, "title": title, "original_filename": original_name,
+                                    "source": "sintesi importata", "imported_at": time.strftime("%Y-%m-%d %H:%M")})
+    if CFG["auto_process_card"]:
+        enqueue_process_card(pdir.name, sdir.name)
+    return sdir.name
+
+
+def adopt_loose_files(pdir: Path):
+    """Files dropped straight into a patient folder get their own dated session folder:
+    audio becomes a session to transcribe, a PDF becomes a session with an imported summary.
+    The date comes from the file name when it contains one, otherwise from the file's modification time.
     """
     for f in list(pdir.iterdir()):
-        if not f.is_file() or f.suffix.lower() not in AUDIO_EXTS:
+        ext = f.suffix.lower()
+        if not f.is_file() or (ext not in AUDIO_EXTS and ext != ".pdf"):
             continue
         st = f.stat()
         if time.time() - st.st_mtime < 15:
             continue  # probably still being copied; pick it up on a later refresh
-        m = DATE_IN_NAME.search(f.stem)
-        d = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else time.strftime("%Y-%m-%d", time.localtime(st.st_mtime))
-        title = re.sub(r"[_\s]+", " ", DATE_IN_NAME.sub("", f.stem)).strip(" -_.")
-        title = re.sub(r"\b([01]\d|2[0-3])([0-5]\d)([0-5]\d)?\b", r"ore \1:\2", title) or "sessione"  # REC_..._143000
-        try:
-            base = f"{d}_{safe_name(title)[:60].replace(' ', '_')}"
-        except HTTPException:
-            base = f"{d}_sessione"
-        name, n = base, 2
-        while (pdir / name).exists():
-            name, n = f"{base}_{n}", n + 1
-        sdir = pdir / name
+        if ext == ".pdf":
+            try:
+                import_summary_pdf(pdir, f, f.name, move=True)
+            except Exception as e:  # noqa: BLE001 - leave the file where it is, report it once in the log
+                print(f"[import] {f.name}: {e}")
+                f.rename(f.with_suffix(".pdf.non_importato")) if "testo" in str(e) else None
+            continue
+        d, matched = date_in_name(f.stem)
+        d = d or time.strftime("%Y-%m-%d", time.localtime(st.st_mtime))
+        title = session_title_from(f.stem, matched, pdir.name) or "sessione"
+        sdir = new_session_dir(pdir, d, title)
         try:
             sdir.mkdir()
-            shutil.move(str(f), sdir / f"audio{f.suffix.lower()}")
+            shutil.move(str(f), sdir / f"audio{ext}")
         except OSError:  # file locked (still copying / open in a player): retry on the next refresh
             if sdir.exists() and not any(sdir.iterdir()):
                 sdir.rmdir()
@@ -223,7 +330,7 @@ def adopt_loose_audio(pdir: Path):
 
 
 def list_sessions(pdir: Path):
-    adopt_loose_audio(pdir)
+    adopt_loose_files(pdir)
     sessions = [session_info(s) for s in pdir.iterdir() if s.is_dir()]
     sessions.sort(key=lambda s: (s["date"], s["id"]), reverse=True)
     return sessions
@@ -295,11 +402,15 @@ def get_skill(skill_id: str):
     for s in load_skills():
         if s["id"] == skill_id:
             return s
+    if skill_id == IMPORTED_SKILL:
+        return {"id": IMPORTED_SKILL, "name": "Sintesi importata", "description": "",
+                "prompt": "Il testo è una sintesi clinica di seduta scritta in precedenza dal clinico con un'altra "
+                          "applicazione (importata da PDF). Mantieni la sua struttura e il suo stile."}
     raise HTTPException(404, "Modello di sintesi non trovato")
 
 
 def list_summaries(sdir: Path):
-    names = {s["id"]: s["name"] for s in load_skills()}
+    names = {s["id"]: s["name"] for s in load_skills()} | {IMPORTED_SKILL: "Sintesi importata"}
     out = []
     for f in sorted(sdir.glob("sintesi_*.md"), key=lambda f: f.stat().st_mtime, reverse=True):
         sid = f.stem[len("sintesi_"):]
@@ -449,24 +560,26 @@ def prompt_prefix(patient: str, meta: dict, skill: dict, transcript: str):
     """System prompt + transcript block shared by every Gemma job on a session (summary, edits, process card).
     Keeping it byte-identical lets llama.cpp reuse the transcript it already read."""
     system = (load_context() + "\n\n" + skill["prompt"]).strip()
-    head = (f"Paziente: {patient}\nData della sessione: {meta.get('date', '')}\n"
-            f"Titolo: {meta.get('title', '')}\n\nTRASCRIZIONE:\n\"\"\"\n{transcript}\n\"\"\"")
+    head = f"Paziente: {patient}\nData della sessione: {meta.get('date', '')}\nTitolo: {meta.get('title', '')}"
+    if transcript:
+        head += f"\n\nTRASCRIZIONE:\n\"\"\"\n{transcript}\n\"\"\""
     return system, head
 
 
 def run_summary(job: dict):
     sdir = ROOT / job["patient"] / job["session"]
     txt = sdir / "transcript.txt"
-    if not txt.exists():
+    mode = job.get("mode", "generate")
+    if not txt.exists() and mode == "generate":
         raise RuntimeError("La sessione non ha ancora una trascrizione")
-    transcript = txt.read_text(encoding="utf-8-sig", errors="replace").strip()
+    # imported summaries have no transcript: edits and grammar then work on the summary alone
+    transcript = txt.read_text(encoding="utf-8-sig", errors="replace").strip() if txt.exists() else ""
     est_tokens = len(transcript) / 3.2
     if est_tokens > CFG["llm_ctx"] - 4000:
         raise RuntimeError(f"Trascrizione troppo lunga per il contesto del modello (~{int(est_tokens)} token): "
                            f"aumenta 'llm_ctx' in config.json")
     skill = get_skill(job["skill"])
     meta = read_json(sdir / "meta.json", {}) or {}
-    mode = job.get("mode", "generate")
     request = job["instructions"].strip()
     current_file = sdir / f"sintesi_{skill['id']}.md"
     current = current_file.read_text(encoding="utf-8-sig", errors="replace").strip() if current_file.exists() else ""
@@ -486,8 +599,9 @@ def run_summary(job: dict):
                "Restituisci il testo completo della sintesi modificata, senza commenti.")
         user = (head + f"\n\nSINTESI ATTUALE:\n\"\"\"\n{current}\n\"\"\"\n\n"
                 "STAI MODIFICANDO LA SINTESI ATTUALE. Applica solo la richiesta del clinico qui sotto, lascia invariato "
-                "tutto il resto e mantieni lo stesso formato Markdown. Le regole restano valide: usa solo informazioni "
-                f"presenti nella trascrizione. {how}\n\nRICHIESTA DI MODIFICA DEL CLINICO: {request}")
+                "tutto il resto e mantieni lo stesso formato. Le regole restano valide: usa solo informazioni "
+                f"presenti nella {'trascrizione' if transcript else 'sintesi attuale'}. {how}\n\n"
+                f"RICHIESTA DI MODIFICA DEL CLINICO: {request}")
     else:
         user = head + ("\n\nIstruzioni aggiuntive del clinico: " + request if request else "")
 
@@ -613,15 +727,25 @@ def enqueue_process_card(patient: str, session: str, skill_id: str = ""):
 def run_process_card(job: dict):
     sdir = ROOT / job["patient"] / job["session"]
     txt = sdir / "transcript.txt"
-    if not txt.exists():
-        raise RuntimeError("La sessione non ha ancora una trascrizione")
-    transcript = txt.read_text(encoding="utf-8-sig", errors="replace").strip()
     meta = read_json(sdir / "meta.json", {}) or {}
     try:
         skill = get_skill(job["skill"])
     except HTTPException:
         skill = load_skills()[0]
-    system, head = prompt_prefix(job["patient"], meta, skill, transcript)
+    if txt.exists():
+        source = "trascrizione"
+        system, head = prompt_prefix(job["patient"], meta, skill,
+                                     txt.read_text(encoding="utf-8-sig", errors="replace").strip())
+    else:
+        # no recording (e.g. a summary imported from another app): score from the summary text instead
+        summary = session_summary_text(sdir)
+        if not summary:
+            raise RuntimeError("Serve una trascrizione o una sintesi per compilare la scheda")
+        source = "sintesi"
+        system, head = prompt_prefix(job["patient"], meta, skill, "")
+        head += (f"\n\nNON C'È LA TRASCRIZIONE: hai solo la SINTESI DELLA SEDUTA scritta dal clinico. Basati su di essa "
+                 f"(le evidenze saranno parafrasi, non citazioni) e usa 0 per i processi che non vi compaiono.\n\n"
+                 f"SINTESI:\n\"\"\"\n{summary}\n\"\"\"")
     job["run_started"] = time.time()
     LLM_SERVER.busy = True
     try:
@@ -644,10 +768,20 @@ def run_process_card(job: dict):
     write_json(sdir / "processi.json", {
         "generated_at": time.strftime("%Y-%m-%d %H:%M"), "llm": Path(CFG["llm_model"]).stem,
         "seconds": round(time.time() - job["run_started"]), "cached_tokens": timings.get("cache_n"),
-        "written_tokens": timings.get("predicted_n"),
+        "written_tokens": timings.get("predicted_n"), "source": source,
         "proposed": card, "confirmed": old.get("confirmed", {})})  # clinician's confirmations survive a re-run
     job["status"] = "done"
     job["progress"] = 100
+
+
+def session_summary_text(sdir: Path):
+    """Text of the session's summary to analyze when there is no transcript: the imported one first."""
+    files = sorted(sdir.glob("sintesi_*.md"), key=lambda f: (f.stem != f"sintesi_{IMPORTED_SKILL}", -f.stat().st_mtime))
+    return files[0].read_text(encoding="utf-8-sig", errors="replace").strip() if files else ""
+
+
+def analyzable(sdir: Path):
+    return (sdir / "transcript.txt").exists() or any(sdir.glob("sintesi_*.md"))
 
 
 def effective_card(sdir: Path):
@@ -666,7 +800,7 @@ def effective_card(sdir: Path):
     return {"processi": procs, "temi": prop.get("temi", []), "valori": prop.get("valori_emersi", []),
             "azioni": prop.get("azioni_concordate", []), "compiti": prop.get("compiti_precedenti", {}),
             "rischio": prop.get("rischio", ""), "generated_at": data.get("generated_at"),
-            "all_confirmed": all(k in conf for k, _ in PROCESSES)}
+            "all_confirmed": all(k in conf for k, _ in PROCESSES), "source": data.get("source", "trascrizione")}
 
 
 GRAMMAR_PROMPT = (
@@ -1078,7 +1212,7 @@ class ScoreUpdate(BaseModel):
 @app.post("/api/patients/{patient}/sessions/{session}/processi")
 def create_process_card(patient: str, session: str):
     sdir = session_dir(patient, session)
-    if not (sdir / "transcript.txt").exists():
+    if not analyzable(sdir):
         raise HTTPException(400, "Prima serve la trascrizione")
     enqueue_process_card(sdir.parent.name, sdir.name)
     return process_job_info(sdir.parent.name, sdir.name)
@@ -1131,7 +1265,7 @@ def get_trend(patient: str):
     for s in sessions:
         sdir = pdir / s["id"]
         out.append({"id": s["id"], "date": s["date"], "title": s["title"],
-                    "has_transcript": (sdir / "transcript.txt").exists(), "card": effective_card(sdir),
+                    "analyzable": analyzable(sdir), "card": effective_card(sdir),
                     "job": process_job_info(pdir.name, s["id"])})
     return {"patient": pdir.name, "processes": [{"key": k, "label": l} for k, l in PROCESSES],
             "hexaflex": HEXAFLEX, "sessions": out}
@@ -1144,16 +1278,47 @@ def analyze_missing(patient: str):
     n = 0
     for s in list_sessions(pdir):
         sdir = pdir / s["id"]
-        if (sdir / "transcript.txt").exists() and not (sdir / "processi.json").exists():
+        if analyzable(sdir) and not (sdir / "processi.json").exists():
             enqueue_process_card(pdir.name, s["id"])
             n += 1
     return {"queued": n}
 
 
+@app.post("/api/patients/{patient}/import")
+async def import_summaries(patient: str, files: list[UploadFile] = File(...)):
+    """Import summary PDFs made with another app: one session per file, dated from the file name."""
+    pdir = patient_dir(patient)
+    created, errors = [], []
+    for up in files:
+        if not (up.filename or "").lower().endswith(".pdf"):
+            errors.append({"file": up.filename, "error": "non è un PDF"})
+            continue
+        tmp = pdir / f".import_{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp, "wb") as f:
+                while chunk := await up.read(1024 * 1024):
+                    f.write(chunk)
+            created.append(import_summary_pdf(pdir, tmp, up.filename, move=True))
+        except Exception as e:  # noqa: BLE001
+            errors.append({"file": up.filename, "error": str(e)})
+        finally:
+            tmp.unlink(missing_ok=True)
+    return {"created": created, "errors": errors}
+
+
+@app.get("/api/patients/{patient}/sessions/{session}/originale")
+def get_original_pdf(patient: str, session: str):
+    f = session_dir(patient, session) / "sintesi_originale.pdf"
+    if not f.exists():
+        raise HTTPException(404, "PDF originale non trovato")
+    return FileResponse(f, media_type="application/pdf")
+
+
 @app.post("/api/patients/{patient}/sessions/{session}/summary")
 def create_summary(patient: str, session: str, body: SummaryRequest):
     sdir = session_dir(patient, session)
-    if not (sdir / "transcript.txt").exists():
+    if not (sdir / "transcript.txt").exists() and (body.mode == "generate" or
+                                                   not (sdir / f"sintesi_{safe_name(body.skill)}.md").exists()):
         raise HTTPException(400, "Prima serve la trascrizione")
     get_skill(body.skill)
     if body.mode not in ("generate", "revise", "grammar"):

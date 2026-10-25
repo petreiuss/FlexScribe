@@ -7,6 +7,7 @@ Applicazione web locale per psicoterapeuti: trascrive le registrazioni delle sed
 ## Funzioni
 
 - **Pazienti e sedute** come normali cartelle su disco (`Pazienti/<Paziente>/<AAAA-MM-GG_titolo>/`). I file audio copiati direttamente nella cartella di un paziente diventano automaticamente una seduta datata.
+- **Importazione di sintesi in PDF** fatte con altre applicazioni (pulsante «Importa sintesi PDF» o copiando i PDF nella cartella del paziente): la data viene letta dal nome del file (`2026-09-12`, `12-09-2026`, `12.09.2026`, `20260912`, `12 settembre 2026`). Queste sedute entrano nell'andamento con una scheda dei processi ricavata dalla sintesi.
 - **Trascrizione** con Whisper large-v3-turbo su scheda grafica Intel (OpenVINO), circa 8 minuti per un'ora di audio; fallback su CPU con whisper.cpp.
 - **Sintesi cliniche** con modelli ("skill") personalizzabili in `skills/`: sintesi di seduta (CBT di terza generazione), nota SOAP, lettera al medico curante, punti chiave.
 - **Modifica con Gemma** (riscrive solo le sezioni interessate), **modifica a mano**, **controllo grammaticale** (che non tocca le citazioni del paziente) e **cronologia delle versioni** con annullamento.
