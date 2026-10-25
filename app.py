@@ -1130,7 +1130,7 @@ def get_skills():
 def get_patients():
     out = []
     for p in sorted(ROOT.iterdir(), key=lambda x: x.name.lower()):
-        if not p.is_dir():
+        if not p.is_dir() or p.name.startswith(("_", ".")):  # skip the trash (_Cestino) and hidden folders
             continue
         sessions = list_sessions(p)
         out.append({
@@ -1322,26 +1322,177 @@ class DateUpdate(BaseModel):
     date: str
 
 
+class TitleUpdate(BaseModel):
+    title: str
+
+
+class MoveRequest(BaseModel):
+    patient: str
+
+
+class NameUpdate(BaseModel):
+    name: str
+
+
+TRASH = "_Cestino"  # deleted sessions and patients go here first (inside patients_dir), so they can be restored
+
+
+def ensure_idle(prefix: str):
+    """409 if a transcription/summary/card job is running on this patient or session (paths would change)."""
+    if any(j["status"] in ACTIVE for k, j in JOBS.items() if k == prefix or k.startswith(prefix + "/")
+           or k.startswith(prefix + "#")):
+        raise HTTPException(409, "Attendi la fine dei lavori in corso")
+
+
+def rename_session(sdir: Path, d: str, title: str):
+    """Rename a session folder to '<date>_<title>' and update meta.json; returns the new folder."""
+    meta = read_json(sdir / "meta.json", {}) or {}
+    meta.update({"date": d, "title": title})
+    write_json(sdir / "meta.json", meta)
+    wanted = f"{d}_{safe_name(title).replace(' ', '_')}" if title else f"{d}_seduta"
+    if sdir.name == wanted:
+        return sdir
+    target = new_session_dir(sdir.parent, d, title)
+    sdir.rename(target)
+    return target
+
+
+def to_trash(path: Path, label: str):
+    """Move a patient or session folder into _Cestino, with a note of where it came from."""
+    tdir = ROOT / TRASH
+    tdir.mkdir(exist_ok=True)
+    target = tdir / f"{time.strftime('%Y%m%d-%H%M%S')}_{path.name}"
+    shutil.move(str(path), target)
+    write_json(target / "_cestino.json", {"origin": str(path.relative_to(ROOT)), "label": label,
+                                          "deleted_at": time.strftime("%Y-%m-%d %H:%M")})
+    return target
+
+
 @app.put("/api/patients/{patient}/sessions/{session}/data")
 def set_session_date(patient: str, session: str, body: DateUpdate):
     """Change a session's date: updates meta.json and renames the folder so it starts with the new date."""
     sdir = session_dir(patient, session)
     try:
-        d = date.fromisoformat(body.date).isoformat()
+        d = date.fromisoformat(body.date.strip()).isoformat()
     except ValueError:
-        raise HTTPException(400, "Data non valida")
-    p, s = sdir.parent.name, sdir.name
-    if any(j["status"] in ACTIVE for k, j in JOBS.items() if k.startswith(f"{p}/{s}")):
-        raise HTTPException(409, "Attendi la fine dei lavori in corso su questa seduta")
-    meta = read_json(sdir / "meta.json", {}) or {}
-    meta.update({"date": d, "date_source": "modificata a mano"})
-    write_json(sdir / "meta.json", meta)
-    rest = re.sub(r"^\d{4}-\d{2}-\d{2}_?", "", s)
-    target = sdir
-    if not s.startswith(d):
-        target = new_session_dir(sdir.parent, d, rest.replace("_", " ") if rest else "")
-        sdir.rename(target)
+        raise HTTPException(400, "Data non valida (formato AAAA-MM-GG)")
+    ensure_idle(f"{sdir.parent.name}/{sdir.name}")
+    title = session_info(sdir)["title"]
+    target = rename_session(sdir, d, title)
+    meta = read_json(target / "meta.json", {}) or {}
+    meta["date_source"] = "modificata a mano"
+    write_json(target / "meta.json", meta)
     return {"id": target.name, "date": d}
+
+
+@app.put("/api/patients/{patient}/sessions/{session}/titolo")
+def set_session_title(patient: str, session: str, body: TitleUpdate):
+    sdir = session_dir(patient, session)
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, "Il titolo non può essere vuoto")
+    safe_name(title)
+    ensure_idle(f"{sdir.parent.name}/{sdir.name}")
+    info = session_info(sdir)
+    target = rename_session(sdir, info["date"] or date.today().isoformat(), title)
+    return {"id": target.name}
+
+
+@app.post("/api/patients/{patient}/sessions/{session}/sposta")
+def move_session(patient: str, session: str, body: MoveRequest):
+    """Move a session to another patient (e.g. imported or recorded under the wrong name)."""
+    sdir = session_dir(patient, session)
+    dest = patient_dir(body.patient)
+    if dest == sdir.parent:
+        raise HTTPException(400, "La seduta è già di questo paziente")
+    ensure_idle(f"{sdir.parent.name}/{sdir.name}")
+    info = session_info(sdir)
+    target = new_session_dir(dest, info["date"] or date.today().isoformat(), info["title"])
+    shutil.move(str(sdir), target)
+    return {"patient": dest.name, "id": target.name}
+
+
+@app.delete("/api/patients/{patient}/sessions/{session}")
+def delete_session(patient: str, session: str):
+    sdir = session_dir(patient, session)
+    ensure_idle(f"{sdir.parent.name}/{sdir.name}")
+    info = session_info(sdir)
+    to_trash(sdir, f"{sdir.parent.name} · {info['date']} {info['title']}")
+    return {"ok": True}
+
+
+@app.put("/api/patients/{patient}")
+def rename_patient(patient: str, body: NameUpdate):
+    pdir = patient_dir(patient)
+    name = safe_name(body.name)
+    if name.startswith(("_", ".")):
+        raise HTTPException(400, "Nome non valido")
+    target = inside_root(name)
+    if target.exists() and target.resolve() != pdir.resolve():
+        raise HTTPException(409, "Esiste già un paziente con questo nome")
+    ensure_idle(pdir.name)
+    pdir.rename(target)
+    return {"name": name}
+
+
+@app.post("/api/patients/{patient}/open")
+def open_patient_folder(patient: str):
+    os.startfile(patient_dir(patient))
+    return {"ok": True}
+
+
+@app.delete("/api/patients/{patient}")
+def delete_patient(patient: str):
+    pdir = patient_dir(patient)
+    if pdir.name.startswith(("_", ".")):
+        raise HTTPException(400, "Non si può eliminare")
+    ensure_idle(pdir.name)
+    to_trash(pdir, f"Paziente {pdir.name}")
+    return {"ok": True}
+
+
+@app.get("/api/cestino")
+def list_trash():
+    tdir = ROOT / TRASH
+    items = []
+    for d in sorted(tdir.iterdir(), reverse=True) if tdir.exists() else []:
+        if d.is_dir():
+            info = read_json(d / "_cestino.json", {}) or {}
+            items.append({"id": d.name, "label": info.get("label", d.name), "origin": info.get("origin", ""),
+                          "deleted_at": info.get("deleted_at", "")})
+    return items
+
+
+@app.post("/api/cestino/{item}/ripristina")
+def restore_trash(item: str):
+    src = inside_root(TRASH, item)
+    info = read_json(src / "_cestino.json", {}) or {}
+    origin = Path(info.get("origin", ""))
+    if not src.is_dir() or not origin.parts:
+        raise HTTPException(404, "Elemento non trovato")
+    (src / "_cestino.json").unlink(missing_ok=True)
+    if len(origin.parts) == 1:  # a whole patient
+        target, n = ROOT / origin.parts[0], 2
+        while target.exists():
+            target, n = ROOT / f"{origin.parts[0]} ({n})", n + 1
+    else:  # a session: back into its patient (recreated if the patient was deleted meanwhile)
+        pdir = ROOT / origin.parts[0]
+        pdir.mkdir(exist_ok=True)
+        m = re.match(r"(\d{4}-\d{2}-\d{2})_?(.*)", origin.parts[1])
+        target = (pdir / origin.parts[1]) if not (pdir / origin.parts[1]).exists() else \
+            new_session_dir(pdir, m.group(1) if m else date.today().isoformat(), (m.group(2) if m else "").replace("_", " "))
+    shutil.move(str(src), target)
+    return {"restored": str(target.relative_to(ROOT))}
+
+
+@app.delete("/api/cestino/{item}")
+def purge_trash(item: str):
+    """Permanently delete one item from the trash."""
+    src = inside_root(TRASH, item)
+    if not src.is_dir():
+        raise HTTPException(404, "Elemento non trovato")
+    shutil.rmtree(src)
+    return {"ok": True}
 
 
 @app.get("/api/patients/{patient}/sessions/{session}/originale")

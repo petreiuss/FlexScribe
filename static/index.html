@@ -74,6 +74,10 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
+  .menu { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; min-width: 220px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+  .menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; }
+  .menu button:hover { background: var(--bg); } .menu button.danger { color: var(--err); } .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  .icon-btn { padding: 4px 12px; font-size: 16px; line-height: 1; }
   dialog label textarea { display: block; width: 100%; margin-top: 4px; min-height: 70px; resize: vertical; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .note { line-height: 1.6; padding: 4px 2px; }
@@ -144,6 +148,15 @@
   </form>
 </dialog>
 
+<dialog id="dlgAsk">
+  <form method="dialog" id="formAsk">
+    <h3 id="askTitle"></h3>
+    <label><span id="askLabel"></span><span id="askField"></span></label>
+    <p class="hint" id="askHint"></p>
+    <div class="actions"><button value="cancel" formnovalidate>Annulla</button><button class="primary" value="ok" id="askOk">Salva</button></div>
+  </form>
+</dialog>
+
 <dialog id="dlgRevise">
   <form method="dialog" id="formRevise">
     <h3>Modifica con Gemma</h3>
@@ -201,6 +214,124 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+// ------------------------------------------------------------ small menu + one-field dialog
+function openMenu(anchor, items) {
+  document.querySelectorAll(".menu").forEach(m => m.remove());
+  const m = document.createElement("div");
+  m.className = "menu";
+  items.forEach(it => {
+    if (it === "-") { m.appendChild(document.createElement("hr")); return; }
+    const b = document.createElement("button");
+    b.textContent = it.label; if (it.danger) b.className = "danger";
+    b.onclick = () => { m.remove(); it.action(); };
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect();
+  m.style.top = (window.scrollY + r.bottom + 4) + "px";
+  m.style.left = Math.max(8, window.scrollX + r.right - m.offsetWidth) + "px";
+  setTimeout(() => document.addEventListener("click", function close(e) {
+    if (!m.contains(e.target)) { m.remove(); document.removeEventListener("click", close); }
+  }), 0);
+}
+
+// resolves with the entered value, or null if cancelled. type: "text" | "date" | "select" (options: [{value,label}])
+function askValue({ title, label, type = "text", value = "", options = [], hint = "", ok = "Salva" }) {
+  return new Promise(resolve => {
+    const dlg = $("#dlgAsk");
+    $("#askTitle").textContent = title; $("#askLabel").textContent = label; $("#askHint").textContent = hint;
+    $("#askOk").textContent = ok;
+    $("#askField").innerHTML = type === "select"
+      ? `<select id="askInput">${options.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("")}</select>`
+      : `<input id="askInput" type="${type}" required>`;
+    const input = $("#askInput"); input.style.display = "block"; input.style.width = "100%"; input.style.marginTop = "4px";
+    if (value) input.value = value;
+    dlg.returnValue = "";
+    dlg.onclose = () => resolve(dlg.returnValue === "ok" && input.value.trim() ? input.value.trim() : null);
+    dlg.showModal(); input.focus();
+  });
+}
+
+const jsonBody = obj => ({ headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
+
+function sessionMenu(patient, s, base) {
+  const go = (p, id) => { location.hash = `#/p/${enc(p)}/${enc(id)}`; route(); };
+  const run = async (fn, msg) => { try { const r = await fn(); if (msg) toast(msg); return r; } catch (e) { alert(e.message); } };
+  return {
+    rename: async () => {
+      const t = await askValue({ title: "Rinomina seduta", label: "Titolo", value: s.title });
+      if (!t || t === s.title) return;
+      const r = await run(() => api(base + "/titolo", { method: "PUT", ...jsonBody({ title: t }) }), "Seduta rinominata");
+      if (r) go(patient, r.id);
+    },
+    changeDate: async () => {
+      const d = await askValue({ title: "Cambia data", label: "Data della seduta", type: "date", value: s.date,
+                                 hint: "Anche la cartella della seduta verrà rinominata con la nuova data." });
+      if (!d || d === s.date) return;
+      const r = await run(() => api(base + "/data", { method: "PUT", ...jsonBody({ date: d }) }), "Data aggiornata");
+      if (r) go(patient, r.id);
+    },
+    move: async () => {
+      const others = (await api("/api/patients")).filter(p => p.name !== patient);
+      if (!others.length) return alert("Non ci sono altri pazienti: crea prima il paziente di destinazione.");
+      const to = await askValue({ title: "Sposta seduta", label: "Paziente di destinazione", type: "select", ok: "Sposta",
+                                  options: others.map(p => ({ value: p.name, label: p.name })) });
+      if (!to) return;
+      const r = await run(() => api(base + "/sposta", { method: "POST", ...jsonBody({ patient: to }) }), "Seduta spostata a " + to);
+      if (r) go(r.patient, r.id);
+    },
+    remove: async () => {
+      if (!confirm(`Eliminare la seduta “${s.title}” del ${fmtDate(s.date)}?\nVerrà spostata nel Cestino, da cui puoi ripristinarla.`)) return;
+      const r = await run(() => api(base, { method: "DELETE" }), "Seduta spostata nel Cestino");
+      if (r) { current.session = null; location.hash = "#/p/" + enc(patient); route(); }
+    },
+  };
+}
+
+function patientMenu(anchor, patient) {
+  openMenu(anchor, [
+    { label: "Rinomina paziente…", action: async () => {
+        const n = await askValue({ title: "Rinomina paziente", label: "Nome", value: patient });
+        if (!n || n === patient) return;
+        try { const r = await api("/api/patients/" + enc(patient), { method: "PUT", ...jsonBody({ name: n }) });
+              toast("Paziente rinominato"); location.hash = "#/p/" + enc(r.name); } catch (e) { alert(e.message); }
+      } },
+    { label: "Apri cartella del paziente", action: () => api(`/api/patients/${enc(patient)}/open`, { method: "POST" }) },
+    "-",
+    { label: "Elimina paziente", danger: true, action: async () => {
+        if (!confirm(`Eliminare il paziente “${patient}” con tutte le sue sedute?\nVerrà spostato nel Cestino, da cui puoi ripristinarlo.`)) return;
+        try { await api("/api/patients/" + enc(patient), { method: "DELETE" }); toast("Paziente spostato nel Cestino");
+              location.hash = "#/"; } catch (e) { alert(e.message); }
+      } },
+  ]);
+}
+
+async function renderTrash() {
+  $("#crumb").textContent = "/ cestino";
+  const items = await api("/api/cestino");
+  app.innerHTML = `
+    <div class="toolbar"><button onclick="location.hash='#/'">← Pazienti</button></div>
+    <div class="panel">
+      <h2 style="margin-bottom:10px">Cestino</h2>
+      <p class="hint" style="margin-top:0">Sedute e pazienti eliminati. Restano qui finché non li elimini definitivamente (cartella “_Cestino” nella cartella pazienti).</p>
+      ${items.length ? `<div class="list">${items.map(i => `
+        <div class="item" style="cursor:default;display:flex;gap:10px;align-items:center">
+          <div style="flex:1"><div class="t">${esc(i.label)}</div><div class="muted">eliminato il ${esc(i.deleted_at)}</div></div>
+          <button data-r="${esc(i.id)}">Ripristina</button>
+          <button data-x="${esc(i.id)}" style="color:var(--err)">Elimina definitivamente</button>
+        </div>`).join("")}</div>` : `<div class="empty">Il cestino è vuoto.</div>`}
+    </div>`;
+  app.querySelectorAll("[data-r]").forEach(b => b.onclick = async () => {
+    try { const r = await api(`/api/cestino/${enc(b.dataset.r)}/ripristina`, { method: "POST" }); toast("Ripristinato: " + r.restored); renderTrash(); }
+    catch (e) { alert(e.message); }
+  });
+  app.querySelectorAll("[data-x]").forEach(b => b.onclick = async () => {
+    if (!confirm("Eliminare definitivamente? Non si potrà più recuperare.")) return;
+    try { await api(`/api/cestino/${enc(b.dataset.x)}`, { method: "DELETE" }); toast("Eliminato definitivamente"); renderTrash(); }
+    catch (e) { alert(e.message); }
+  });
+}
+
 // ------------------------------------------------------------ dashboard
 async function renderDashboard() {
   $("#crumb").textContent = "";
@@ -208,6 +339,7 @@ async function renderDashboard() {
   app.innerHTML = `
     <div class="toolbar">
       <input type="search" id="q" placeholder="Cerca paziente…">
+      <button id="btnTrash" title="Sedute e pazienti eliminati">Cestino</button>
       <button class="primary" id="btnNew">+ Nuovo paziente</button>
     </div>
     <div class="grid" id="grid"></div>
@@ -225,6 +357,7 @@ async function renderDashboard() {
   };
   $("#q").oninput = draw;
   $("#btnNew").onclick = () => { $("#formPatient").reset(); $("#dlgPatient").showModal(); };
+  $("#btnTrash").onclick = () => location.hash = "#/cestino";
   draw();
 }
 
@@ -242,6 +375,7 @@ async function renderPatient(patient, sessionId) {
       <input type="file" id="importFiles" accept=".pdf,application/pdf" multiple hidden>
       <button id="btnTrend" title="Andamento dei processi nelle sedute">Andamento</button>
       <button class="primary" id="btnUpload">+ Nuova trascrizione</button>
+      <button class="icon-btn" id="btnPatMenu" title="Altre azioni sul paziente" aria-label="Altre azioni sul paziente">⋯</button>
     </div>
     <div class="layout">
       <div class="list" id="sessions">${data.sessions.length ? data.sessions.map(s => `
@@ -256,6 +390,7 @@ async function renderPatient(patient, sessionId) {
   document.querySelectorAll("#sessions .item").forEach(i => i.onclick = () => location.hash = `#/p/${enc(patient)}/${enc(i.dataset.s)}`);
   $("#btnUpload").onclick = openUpload;
   $("#btnTrend").onclick = () => location.hash = "#/a/" + enc(patient);
+  $("#btnPatMenu").onclick = e => patientMenu(e.currentTarget, patient);
   $("#btnImport").onclick = () => $("#importFiles").click();
   $("#importFiles").onchange = async e => {
     const fd = new FormData(); [...e.target.files].forEach(f => fd.append("files", f));
@@ -289,8 +424,8 @@ async function renderSession(patient, sessionId) {
         <div><h2>${esc(s.title)}</h2><div class="muted"><a href="#" id="lnkDate" title="Cambia la data della seduta" style="color:inherit">${esc(fmtDate(s.date) || "senza data")}</a>${s.meta.date_source && s.meta.date_source !== "nome del file" && s.meta.date_source !== "modificata a mano" ? ` <span class="badge ${s.meta.date_source.includes("verificare") ? "b-pending" : "b-busy"}" title="Data presa da: ${esc(s.meta.date_source)}">${s.meta.date_source.includes("verificare") ? "data da verificare" : "data dal testo del PDF"}</span>` : ""}${s.meta.model ? " · " + esc(modelLabel(s.meta.model)) : ""}${s.meta.transcribed_at ? " · trascritta il " + esc(s.meta.transcribed_at) : ""}${imported ? " · sintesi importata da " + esc(s.meta.original_filename || "PDF") : ""}</div></div>
         <div class="row">
           ${s.meta.source === "sintesi importata" ? `<a class="btn" href="${base}/originale" target="_blank" style="text-decoration:none">PDF originale</a>` : ""}
-          <button id="btnFolder" title="Apri la cartella in Esplora file">Apri cartella</button>
           ${s.has_audio && !busy ? `<button id="btnRedo">${s.status === "done" ? "Ritrascrivi" : "Trascrivi"}</button>` : ""}
+          <button class="icon-btn" id="btnSessMenu" title="Rinomina, cambia data, sposta, elimina" aria-label="Altre azioni sulla seduta">⋯</button>
         </div>
       </div>
       ${s.has_audio ? `<audio id="player" controls preload="metadata" src="${base}/audio"></audio>` : ""}
@@ -300,16 +435,16 @@ async function renderSession(patient, sessionId) {
         <div class="tabs">${imported ? "" : `<button data-tab="text">Testo</button><button data-tab="seg">Segmenti con orari</button>`}<button data-tab="sum">Sintesi clinica${sumActive ? '<span class="dot"></span>' : s.summaries.length ? ` (${s.summaries.length})` : ""}</button><button data-tab="proc">Processi${procActive ? '<span class="dot"></span>' : s.processi ? " ✓" : ""}</button></div>
         <div id="tabBody"></div>` : ""}
     </div>`;
-  $("#btnFolder").onclick = () => api(base + "/open", { method: "POST" });
-  $("#lnkDate").onclick = async e => {
-    e.preventDefault();
-    const v = prompt("Data della seduta (AAAA-MM-GG):", s.date || new Date().toISOString().slice(0, 10));
-    if (!v || v === s.date) return;
-    try {
-      const r = await api(base + "/data", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date: v.trim() }) });
-      toast("Data aggiornata"); location.hash = `#/p/${enc(patient)}/${enc(r.id)}`;
-    } catch (err) { alert(err.message); }
-  };
+  const sessionActions = sessionMenu(patient, s, base);
+  $("#lnkDate").onclick = e => { e.preventDefault(); sessionActions.changeDate(); };
+  $("#btnSessMenu").onclick = e => openMenu(e.currentTarget, [
+    { label: "Rinomina…", action: sessionActions.rename },
+    { label: "Cambia data…", action: sessionActions.changeDate },
+    { label: "Sposta a un altro paziente…", action: sessionActions.move },
+    { label: "Apri cartella", action: () => api(base + "/open", { method: "POST" }) },
+    "-",
+    { label: "Elimina seduta", danger: true, action: sessionActions.remove },
+  ]);
   const redo = $("#btnRedo");
   if (redo) redo.onclick = async () => {
     if (s.status === "done" && !confirm("Ritrascrivere? Il testo attuale verrà sostituito.")) return;
@@ -736,7 +871,9 @@ async function pollJobs() {
 async function route(soft) {
   const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
   try {
-    if (parts[0] === "a" && parts[1]) {
+    if (parts[0] === "cestino") {
+      await renderTrash();
+    } else if (parts[0] === "a" && parts[1]) {
       await renderTrend(parts[1]);
     } else if (parts[0] === "p" && parts[1]) {
       await renderPatient(parts[1], parts[2]);
